@@ -201,12 +201,21 @@ internal sealed class StatusWindow : Form
 	protected override void OnFormClosing(FormClosingEventArgs e)
 	{
 		base.OnFormClosing(e);
-		try
+		// 后台线程停止站点：绝不能在 UI 线程同步等待 StopAsync——
+		// 其内部 await 会捕获 WinForms 同步上下文并回投 UI 线程，而 UI 线程正被本调用阻塞 → 死锁卡死
+		var app = _controller.App;
+		if (app != null)
 		{
-			_controller.Stop();
-		}
-		catch
-		{
+			System.Threading.Tasks.Task.Run(delegate
+			{
+				try
+				{
+					app.StopAsync(TimeSpan.FromSeconds(5)).GetAwaiter().GetResult();
+				}
+				catch
+				{
+				}
+			});
 		}
 	}
 }
