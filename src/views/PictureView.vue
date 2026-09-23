@@ -30,6 +30,13 @@
                   <div class="pic-ph"><el-icon><Picture /></el-icon></div>
                 </template>
               </el-image>
+              <div class="cell-act">
+                <el-popconfirm title="移入回收站？" @confirm="onMoveToRecycle(item)">
+                  <template #reference>
+                    <el-button class="mini" size="small" type="danger" :icon="Delete" :loading="acting" @click.stop />
+                  </template>
+                </el-popconfirm>
+              </div>
             </div>
           </div>
           <div class="load-more">
@@ -42,6 +49,14 @@
 
       <!-- 回收站 -->
       <el-tab-pane label="回收站" name="recycle">
+        <div class="section-bar">
+          <el-popconfirm title="确定清空回收站？此操作不可恢复" @confirm="onEmptyRecycle">
+            <template #reference>
+              <el-button type="danger" plain :icon="Delete" :loading="acting">清空回收站</el-button>
+            </template>
+          </el-popconfirm>
+        </div>
+
         <el-empty v-if="!loading.recycle && !recycle.loadingMore && recycle.items.length === 0" description="回收站为空" />
         <div v-else class="grid-scroll">
           <div class="pic-grid">
@@ -56,6 +71,15 @@
                   <div class="pic-ph"><el-icon><Picture /></el-icon></div>
                 </template>
               </el-image>
+              <div class="cell-act">
+                <el-button class="mini" size="small" type="primary" :icon="RefreshLeft" :loading="acting"
+                  @click.stop="onRecover(item)" />
+                <el-popconfirm title="彻底删除？不可恢复" @confirm="onDeleteForever(item)">
+                  <template #reference>
+                    <el-button class="mini" size="small" type="danger" :icon="Delete" :loading="acting" @click.stop />
+                  </template>
+                </el-popconfirm>
+              </div>
             </div>
           </div>
           <div class="load-more">
@@ -73,9 +97,9 @@
 import { ref, reactive, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { Upload, Picture, Loading } from '@element-plus/icons-vue'
-import { getPictures, addPicture, formatFileSize, type PictureItem } from '@/api/picture'
-import { uploadFile, fetchUserId, generateNonce } from '@/utils/oss'
+import { Upload, Picture, Loading, Delete, RefreshLeft } from '@element-plus/icons-vue'
+import { getPictures, addPicture, recordPictures, formatFileSize, moveToRecycleBin, recoverPictures, deletePictures, emptyRecycleBin, type PictureItem } from '@/api/picture'
+import { uploadGalleryImage, fetchUserId } from '@/utils/oss'
 import { proxyImgSrc } from '@/utils/proxy'
 
 const router = useRouter()
@@ -142,6 +166,69 @@ function openDetail(item: PictureItem) {
   })
 }
 
+/** 回收站操作（依据官方 APK PictureLibrary 接口） */
+const acting = ref(false)
+
+async function afterChange() {
+  await loadFirst('normal')
+  await loadFirst('recycle')
+}
+
+async function onMoveToRecycle(item: PictureItem) {
+  if (!item.id) return
+  acting.value = true
+  try {
+    await moveToRecycleBin([Number(item.id)])
+    ElMessage.success('已移入回收站')
+    await afterChange()
+  } catch (e: any) {
+    ElMessage.error('移入回收站失败：' + (e?.message || e))
+  } finally {
+    acting.value = false
+  }
+}
+
+async function onRecover(item: PictureItem) {
+  if (!item.id) return
+  acting.value = true
+  try {
+    await recoverPictures([Number(item.id)])
+    ElMessage.success('已恢复')
+    await afterChange()
+  } catch (e: any) {
+    ElMessage.error('恢复失败：' + (e?.message || e))
+  } finally {
+    acting.value = false
+  }
+}
+
+async function onDeleteForever(item: PictureItem) {
+  if (!item.id) return
+  acting.value = true
+  try {
+    await deletePictures([Number(item.id)])
+    ElMessage.success('已彻底删除')
+    await afterChange()
+  } catch (e: any) {
+    ElMessage.error('删除失败：' + (e?.message || e))
+  } finally {
+    acting.value = false
+  }
+}
+
+async function onEmptyRecycle() {
+  acting.value = true
+  try {
+    await emptyRecycleBin()
+    ElMessage.success('回收站已清空')
+    await afterChange()
+  } catch (e: any) {
+    ElMessage.error('清空失败：' + (e?.message || e))
+  } finally {
+    acting.value = false
+  }
+}
+
 async function loadMore(key: 'normal' | 'recycle') {
   const s = sectionOf(key)
   if (s.loadingMore || s.finished) return
@@ -192,12 +279,20 @@ async function beforeUpload(file: File) {
       return false
     }
 
-    const url = await uploadFile(file, userId, 'note_v2', '', file.name)
+    // 官方图库上传流程（复刻管控桌面 APK）：imagestore_v2 前缀 + fc=11 + ft=File + 扩展名
+    // objectKey = imagestore_v2/res/{userId}/{yyyyMMdd}/{nonce}{ext}
+    const { url, name } = await uploadGalleryImage(file, userId)
     const sizeStr = formatFileSize(file.size)
-    const parts = url.split('/')
-    const nonce = parts[parts.length - 2] || generateNonce()
 
-    await addPicture(url, nonce, sizeStr)
+    // 登记到图库：body {name, picture, size, appName:"图库"}
+    await addPicture(name, url, sizeStr, '图库')
+    // 官方随后还会写一条应用记录；非必需，失败不影响图库登记
+    try {
+      await recordPictures([url], '图库')
+    } catch {
+      /* ignore */
+    }
+
     ElMessage.success('上传成功')
     await loadFirst('normal')
   } catch (e: any) {
@@ -263,6 +358,23 @@ onBeforeUnmount(() => {
 }
 .pic-cell:hover {
   transform: scale(1.03);
+}
+/* 单元格右上角操作按钮 */
+.cell-act {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  display: none;
+  gap: 4px;
+  align-items: center;
+}
+.pic-cell:hover .cell-act {
+  display: flex;
+}
+.cell-act .mini {
+  padding: 2px 6px;
+  height: 24px;
+  min-height: 24px;
 }
 .pic-img {
   width: 100%;

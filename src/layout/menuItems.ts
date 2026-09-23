@@ -18,7 +18,8 @@ import {
   Setting,
   Coffee,
   InfoFilled,
-  Crop
+  Cellphone,
+  Bell
 } from '@element-plus/icons-vue'
 import type { Component } from 'vue'
 
@@ -42,6 +43,8 @@ export const MENU_ITEMS: MenuItem[] = [
   { index: '/lesson', title: '优客畅学', icon: Reading },
   { index: '/advance', title: '高级选项', icon: Setting },
   { index: '/dev', title: '开发工具', icon: Tools },
+  { index: '/download', title: '应用下载', icon: Cellphone },
+  { index: '/system', title: '系统信息', icon: Bell },
   { index: '/proxy', title: '下载加速插件', icon: Download },
   { index: '/about', title: '说明&致谢', icon: InfoFilled }
 ]

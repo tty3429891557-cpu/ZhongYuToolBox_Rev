@@ -213,6 +213,8 @@
 </template>
 
 <script setup lang="ts">
+import { DEFAULT_API_BASE, resolveIframeBase } from '@/config'
+
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import {
@@ -376,11 +378,12 @@ function goMessage(m: AppMessage) {
 }
 
 /* --------------------------- 在新页面打开（复刻旧 iframe URL） --------------------------- */
-const apiHost = computed(() => auth.apiBaseUrl || 'https://zyapi.loshop.com.cn')
+const apiHost = computed(() => auth.apiBaseUrl || DEFAULT_API_BASE)
+const iframeBase = computed(() => resolveIframeBase(auth.apiBaseUrl || DEFAULT_API_BASE))
 const token = computed(() => auth.token || '')
 const newTabUrl = computed(
   () =>
-    `${IFRAME_BASE}/navPage.html?apiHost=${encodeURIComponent(
+    `${iframeBase}/navPage.html?apiHost=${encodeURIComponent(
       apiHost.value
     )}&apiToken=${token.value}#/list?messageType=pager`
 )

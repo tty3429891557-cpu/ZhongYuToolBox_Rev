@@ -22,6 +22,8 @@
 </template>
 
 <script setup lang="ts">
+import { DEFAULT_API_BASE, resolveIframeBase } from '@/config'
+
 import { computed } from 'vue'
 import { TopRight } from '@element-plus/icons-vue'
 import { IFRAME_BASE } from '@/config'
@@ -37,7 +39,8 @@ const kindLabel = computed(
 
 const iframeId = computed(() => `${props.kind}_iframe`)
 
-const apiHost = computed(() => auth.apiBaseUrl || 'https://zyapi.loshop.com.cn')
+const apiHost = computed(() => auth.apiBaseUrl || DEFAULT_API_BASE)
+const iframeBase = computed(() => resolveIframeBase(auth.apiBaseUrl || DEFAULT_API_BASE))
 const token = computed(() => auth.token || '')
 
 // 复刻旧 index.js zxzl_set_url / ck_set_url
@@ -45,7 +48,7 @@ const url = computed(() => {
   const t = token.value
   if (props.kind === 'column') {
     // navPage.html（绝对地址，跨域）
-    return `${IFRAME_BASE}/navPage.html?apiHost=${encodeURIComponent(
+    return `${iframeBase}/navPage.html?apiHost=${encodeURIComponent(
       apiHost.value
     )}&apiToken=${t}#/list?messageType=pager`
   }

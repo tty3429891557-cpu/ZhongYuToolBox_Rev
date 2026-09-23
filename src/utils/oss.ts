@@ -4,6 +4,8 @@
  * 流程：调用 ObjectStorage/GenerateTokenV2Async 换取 STS 凭证，
  * 再用 ali-oss 直传到 {fc}/res/{userId}/{yyyyMMdd}/{nonce}/{fileName}。
  */
+import { DEFAULT_API_BASE } from '@/config'
+
 import OSS from 'ali-oss'
 import CryptoJS from 'crypto-js'
 
@@ -18,6 +20,8 @@ const V_MAP: Record<string, number> = {
   paper_v2: 7,
   revise_v2: 8,
   selection_v2: 9,
+  /** 图库图片（来自官方 APK GalleryRepository 反编译：默认 fc=11） */
+  imagestore_v2: 11,
   manage_v2: 19
 }
 
@@ -41,7 +45,22 @@ export function setOssBaseUrl(url: string): void {
 }
 
 function apiBase(): string {
-  return localStorage.getItem('apiBaseUrl') || 'https://zyapi.loshop.com.cn'
+  return localStorage.getItem('apiBaseUrl') || DEFAULT_API_BASE
+}
+
+/**
+ * 资源日期目录（复刻 index.js 的 dateStr）
+ *
+ * 修复：原来用 toISOString() 取 UTC 日期，而服务端按北京时间生成 STS
+ * 会话策略里的路径前缀。北京时间 00:00-08:00 期间两者相差一天，OSS PUT
+ * 会被 SessionPolicy 隐式拒绝（403 Access denied by authorizer's policy）。
+ * 改为按本机本地日期计算，与服务端策略一致。
+ */
+export function dateStamp(date: Date = new Date()): string {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}${month}${day}`
 }
 
 /** MD5 大写（复刻 index.js md5） */
@@ -130,7 +149,7 @@ export async function uploadFile(
 ): Promise<string> {
   const nonce = nonceInput.trim() || generateNonce()
   const remoteFileName = fileNameInput.trim() || (file as File).name
-  const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+  const dateStr = dateStamp()
 
   const result = await generateStsToken(userId, fc, nonce)
 
@@ -147,6 +166,95 @@ export async function uploadFile(
 
   const endpoint = result.endpoint || `https://${result.bucket}.oss-cn-hangzhou.aliyuncs.com`
   return endpoint.replace(/\/+$/, '') + '/' + remoteFile
+}
+
+/* ============ 图库图片上传（复刻官方 APK GalleryRepository，前缀 imagestore_v2） ============
+ * 依据：中育管控桌面 APK 反编译
+ *   com.zykj.gallery.repository.GalleryRepository.h/f  —— 令牌与对象键
+ *   com.zykj.gallery.oss.UploadUtils.ossUpload          —— OSS 直传
+ *   com.zykj.huiwei.launcher.viewmodels.MainViewModel$saveToOssImg$2 —— 上传编排
+ * 与普通 uploadFile 的差异：fc=11、前缀 imagestore_v2、ft=1(File)、fe=扩展名、
+ * 对象键末段是「nonce+扩展名」（而非 nonce/文件名 两段）。
+ */
+
+/** 图库上传类型数值（fc=11，前缀 imagestore_v2） */
+export const IMAGE_FC = 11
+export const IMAGE_PREFIX = 'imagestore_v2'
+
+/** 取图片扩展名（含点、小写；取不到则 .jpg）
+ *  复刻官方：MimeTypeMap.getExtensionFromMimeType() 为空时回退 "jpg"，再拼 "." */
+export function imageExt(file: File): string {
+  const m = /\.([A-Za-z0-9]+)$/.exec(file.name || '')
+  if (m) return '.' + m[1].toLowerCase()
+  const sub = (file.type || '').split('/')[1]
+  if (sub && /^[A-Za-z0-9.+-]+$/.test(sub)) return '.' + sub.toLowerCase()
+  return '.jpg'
+}
+
+export interface GalleryUploadResult {
+  /** 登记到图库的完整 URL（= endpoint + '/' + objectKey） */
+  url: string
+  /** 图库记录名（= 文件名去掉扩展名，即 nonce） */
+  name: string
+  /** 对象键 */
+  objectKey: string
+}
+
+/**
+ * 上传图片到图库（严格复刻官方 中育管控桌面 的 saveToOssImg 流程）：
+ *  1) STS：POST ObjectStorage/GenerateTokenV2Async
+ *       body { fc:11, ft:1(File), fe:扩展名, fr:1(res), fo:'0', nonce, ts, sign }
+ *       sign = MD5( `${userId}+imagestore_v2+res+1+${fe}+0+${nonce}+${ts}` )（大写）
+ *  2) 直传：objectKey = imagestore_v2/res/{userId}/{yyyyMMdd}/{nonce}{ext}
+ *  3) 返回 url = endpoint + '/' + objectKey
+ */
+export async function uploadGalleryImage(file: File, userId: string): Promise<GalleryUploadResult> {
+  const nonce = generateNonce()
+  const ts = Date.now()
+  const ext = imageExt(file)
+  const sign = md5Upper(`${userId}+${IMAGE_PREFIX}+${FR}+1+${ext}+${FO}+${nonce}+${ts}`)
+  const token = localStorage.getItem('token')
+
+  const resp = await fetch(`${apiBase()}/api/services/app/ObjectStorage/GenerateTokenV2Async`, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      fc: IMAGE_FC,
+      ft: 1,
+      fe: ext,
+      fr: 1,
+      fo: FO,
+      nonce,
+      ts,
+      sign
+    })
+  })
+
+  if (!resp.ok) {
+    const errorText = await resp.text()
+    throw new Error(`服务器响应错误(${resp.status}): ${errorText.substring(0, 100)}`)
+  }
+  const data: any = await resp.json()
+  if (!data.result) throw new Error('获取 token 失败: ' + JSON.stringify(data))
+  const result = data.result as StsCredential
+
+  const client = new OSS({
+    region: result.region || 'oss-cn-hangzhou',
+    accessKeyId: result.accessKeyId,
+    accessKeySecret: result.accessKeySecret,
+    stsToken: result.securityToken,
+    bucket: result.bucket
+  })
+
+  const objectKey = `${IMAGE_PREFIX}/${FR}/${userId}/${dateStamp()}/${nonce}${ext}`
+  await client.put(objectKey, file as any)
+
+  const endpoint = result.endpoint || `https://${result.bucket}.oss-cn-hangzhou.aliyuncs.com`
+  return { url: endpoint.replace(/\/+$/, '') + '/' + objectKey, name: nonce, objectKey }
 }
 
 /** 获取并缓存 OSS 根地址（复刻 fetchOssBaseUrl） */

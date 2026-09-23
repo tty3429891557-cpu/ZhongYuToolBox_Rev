@@ -4,8 +4,10 @@
  * 流程：加载模板 bin -> PDF 转图 -> 上传模板到 OSS -> 逐页上传图片并构建
  * resourceList（每页 9 条固定结构）-> Resources/AddOrUpdate -> Notes/AddOrUpdate
  */
+import { DEFAULT_API_BASE } from '@/config'
+
 import { aesEncrypt } from '@/utils/crypto'
-import { uploadFile } from '@/utils/oss'
+import { dateStamp, uploadFile } from '@/utils/oss'
 import { convertPdfToImages, type PdfPageImage } from '@/utils/pdf'
 
 const TEMPLATE_BASE = 'example/'
@@ -60,7 +62,7 @@ const IMG_MD5 = '4126E637D965204140D4982A1B847283'
 let templateFilesCache: Record<string, Blob> | null = null
 
 function apiBase(): string {
-  return localStorage.getItem('apiBaseUrl') || 'https://zyapi.loshop.com.cn'
+  return localStorage.getItem('apiBaseUrl') || DEFAULT_API_BASE
 }
 
 /** 生成自定义 fileId（复刻 generateCustomFileId，须含 g-z 字符） */
@@ -146,15 +148,22 @@ async function saveResourceList(resourceList: ResourceEntry[]): Promise<void> {
   if (result.code !== 0) throw new Error('保存资源失败: ' + JSON.stringify(result))
 }
 
-/** 保存笔记（复刻 saveNote） */
+/**
+ * 保存笔记（复刻 saveNote）
+ *
+ * 修复：fileUrl 原先硬编码 ezy-sxz 桶，而资源实际上传到服务端 STS 返回的桶
+ * （本校为 ezy-sxzsyxx），且协议写死 http。学校 App 按 fileUrl 取资源，
+ * 桶和协议不一致会导致笔记打不开。现改为使用实际上传得到的 OSS 根地址。
+ */
 async function saveNote(
   userId: string,
   customFileId: string,
   fileName: string,
-  todayStr: string
+  todayStr: string,
+  ossRoot: string
 ): Promise<void> {
   const token = localStorage.getItem('token')
-  const fileUrl = `http://ezy-sxz.oss-cn-hangzhou.aliyuncs.com/note_v2/res/${userId}/${todayStr}/${customFileId}/`
+  const fileUrl = `${ossRoot}note_v2/res/${userId}/${todayStr}/${customFileId}/`
   const data = aesEncrypt(
     JSON.stringify({
       fileId: customFileId,
@@ -206,7 +215,7 @@ export async function uploadPdfAsNote(opts: UploadPdfOptions): Promise<PdfPageIm
 
   const userId = getUserIdFromToken()
   const customFileId = generateCustomFileId()
-  const todayStr = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+  const todayStr = dateStamp()
   const timestamp = new Date()
     .toLocaleString('zh-CN', {
       year: 'numeric',
@@ -303,7 +312,7 @@ export async function uploadPdfAsNote(opts: UploadPdfOptions): Promise<PdfPageIm
   await saveResourceList(resourceList)
 
   report(97, '正在保存笔记...')
-  await saveNote(userId, customFileId, noteName, todayStr)
+  await saveNote(userId, customFileId, noteName, todayStr, ossRoot)
 
   report(100, '上传完成！')
   return pdfImages

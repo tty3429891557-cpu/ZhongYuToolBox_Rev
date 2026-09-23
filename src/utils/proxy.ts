@@ -17,11 +17,22 @@ export function proxyUrl(url: string): string {
   return proxyBaseUrl.endsWith('/') ? proxyBaseUrl + url : proxyBaseUrl + '/' + url
 }
 
-/** 图片代理：alicdn 源直接换 OSS 域名，其余走代理 */
+/**
+ * 图片代理：可选直连的源直接换域名/升 https，其余走代理
+ *
+ * 说明（2026-09-23 实测）：远端下载代理 `zytbdownloadagent.loshop.com.cn` 随站点关停，
+ * 对部分图片会返回非图片内容，浏览器以 ERR_BLOCKED_BY_ORB 拦截。
+ * 而 OSS / 中育自有 CDN 本身可以直连（实测 HTTP 200），
+ * 因此对以下主机改为**直连**，不再经代理中转，避免因代理失效导致图片加载不出来。
+ */
 export function proxyImgSrc(url: string): string {
   if (!url || typeof url !== 'string') return url
   if (url.startsWith('http://sxz.alicdn.zykj.org/')) {
     return url.replace('http://sxz.alicdn.zykj.org/', 'https://ezy-sxz.oss-cn-hangzhou.aliyuncs.com/')
+  }
+  // OSS / 中育 CDN 直连（并尽量升级为 https）
+  if (/^https?:\/\/[^/]*\.(aliyuncs\.com|zyai\.cc|zykj\.org)\//i.test(url)) {
+    return url.replace(/^http:\/\//i, 'https://')
   }
   return proxyUrl(url)
 }

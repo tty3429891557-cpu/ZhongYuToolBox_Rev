@@ -121,6 +121,37 @@
         />
       </el-tab-pane>
 
+      <!-- 回收站 -->
+      <el-tab-pane label="回收站" name="recycle">
+        <div class="tab-toolbar">
+          <span class="count">共 {{ recycleNotes.length }} 条</span>
+          <el-button :loading="recycleLoading" @click="loadRecycleNotes">
+            <el-icon><Refresh /></el-icon>
+          </el-button>
+        </div>
+        <div v-loading="recycleLoading" class="list-wrap">
+          <el-empty v-if="!recycleLoading && recycleNotes.length === 0" description="回收站为空" />
+          <div v-for="note in recycleNotes" :key="note.fileId" class="note-row">
+            <div class="row-left">
+              <el-icon class="row-icon file"><Delete /></el-icon>
+              <div class="row-text">
+                <strong>{{ note.fileName }}</strong>
+                <small>最近更新: {{ note.updateTime || note.createTime || '-' }}</small>
+              </div>
+            </div>
+            <el-button
+              size="small"
+              type="primary"
+              :icon="RefreshLeft"
+              :loading="restoringId === note.fileId"
+              @click.stop="onRestore(note)"
+            >
+              恢复
+            </el-button>
+          </div>
+        </div>
+      </el-tab-pane>
+
       <!-- PDF 上传 -->
       <el-tab-pane label="PDF上传" name="pdf">
         <PdfUploadPanel />
@@ -133,11 +164,13 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { Folder, Document, Search, Refresh } from '@element-plus/icons-vue'
+import { Folder, Document, Search, Refresh, Delete, RefreshLeft } from '@element-plus/icons-vue'
 import {
   getNotesByParentId,
   getAllNotes,
   searchNotes as searchNotesApi,
+  getRecycleNotes,
+  restoreNote,
   type NoteItem
 } from '@/api/note'
 import PdfUploadPanel from './PdfUploadPanel.vue'
@@ -257,6 +290,36 @@ function openPreview(note: NoteItem) {
 
 function handleTabChange(name: string | number) {
   if (name === 'all') loadAllNotes()
+  if (name === 'recycle') loadRecycleNotes()
+}
+
+/* ---------------- 回收站 ---------------- */
+const recycleNotes = ref<NoteItem[]>([])
+const recycleLoading = ref(false)
+const restoringId = ref('')
+
+async function loadRecycleNotes() {
+  recycleLoading.value = true
+  try {
+    recycleNotes.value = await getRecycleNotes()
+  } catch (e: any) {
+    ElMessage.error('回收站加载失败：' + (e?.message || e))
+  } finally {
+    recycleLoading.value = false
+  }
+}
+
+async function onRestore(note: NoteItem) {
+  restoringId.value = note.fileId
+  try {
+    await restoreNote(String((note as any).parentId ?? '0'), note.fileId)
+    ElMessage.success('已恢复')
+    await loadRecycleNotes()
+  } catch (e: any) {
+    ElMessage.error('恢复失败：' + (e?.message || e))
+  } finally {
+    restoringId.value = ''
+  }
 }
 
 onMounted(() => loadNotes('0'))

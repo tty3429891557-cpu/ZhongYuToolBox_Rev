@@ -84,7 +84,7 @@
     </transition>
 
     <!-- 全局问卷弹窗 -->
-    <SurveyModal />
+    <!-- 问卷弹窗已移除：其跳转地址在作者服务器（loshop）上，且模态遮罩会拦截页面所有点击 -->
   </div>
 </template>
 
@@ -102,7 +102,6 @@ import {
   SwitchButton
 } from '@element-plus/icons-vue'
 import SideMenu from './SideMenu.vue'
-import SurveyModal from './SurveyModal.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useProxyStore } from '@/stores/proxy'
 import { startProxyPolling, stopProxyPolling, getProxyBaseUrl } from '@/utils/proxy'

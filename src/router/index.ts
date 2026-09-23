@@ -73,6 +73,8 @@ const routes: RouteRecordRaw[] = [
   { path: '/share', name: 'share', component: () => import('@/views/ShareView.vue'), meta: { title: '分享' } },
   { path: '/about', name: 'about', component: () => import('@/views/AboutView.vue'), meta: { title: '说明&致谢' } },
   { path: '/donate', name: 'donate', component: () => import('@/views/DonateView.vue'), meta: { title: '支持作者' } },
+  { path: '/download', name: 'download', component: () => import('@/views/DownloadView.vue'), meta: { title: '应用下载', keepAlive: true } },
+  { path: '/system', name: 'system', component: () => import('@/views/SystemInfoView.vue'), meta: { title: '系统信息', keepAlive: true } },
   { path: '/proxy', name: 'proxy', component: () => import('@/views/ProxyView.vue'), meta: { title: '下载加速插件' } }
 ]
 

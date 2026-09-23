@@ -13,10 +13,20 @@ import { useAuthStore } from '@/stores/auth'
 
 const BASE = SHARE_SERVER.replace(/\/$/, '')
 
+/**
+ * 分享服务是作者自建的 Flask 服务（zytbshareapi.loshop.com.cn）。
+ * 2026-09-23 实测该域名**已彻底下线**（所有路径连接失败），且学校侧没有等价接口。
+ * 因此这里改为「未配置即明确报错」，避免请求打到本地站点产生 404 之类的误导性错误。
+ */
+export const SHARE_AVAILABLE = BASE.length > 0
+
 async function shareFetch<T = any>(
   path: string,
   options: RequestInit = {}
 ): Promise<T> {
+  if (!SHARE_AVAILABLE) {
+    throw new Error('分享服务已下线（原服务随站点停运，学校侧无等价接口）')
+  }
   const resp = await fetch(`${BASE}${path}`, {
     headers: { 'Content-Type': 'application/json' },
     ...options

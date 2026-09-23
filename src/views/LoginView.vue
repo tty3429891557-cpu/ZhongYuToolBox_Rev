@@ -10,8 +10,12 @@
           <el-form-item label="学校">
             <el-select v-model="schoolSelect" @change="onSchoolChange" style="width: 100%">
               <el-option label="省锡中" value="sxz" />
+              <el-option label="省锡中双语学校" value="sxzsyxx" />
               <el-option label="其它学校" value="other" />
             </el-select>
+            <div class="school-hint">
+              学校须与账号所属学校一致：两校后端不同、数据不互通，选错学校即使能登录也取不到数据。
+            </div>
           </el-form-item>
 
           <el-form-item v-if="schoolSelect === 'other'" label="学校代码">
@@ -128,5 +132,11 @@ onMounted(() => {
 }
 .mt {
   margin-top: 16px;
+}
+.school-hint {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--el-text-color-secondary);
 }
 </style>

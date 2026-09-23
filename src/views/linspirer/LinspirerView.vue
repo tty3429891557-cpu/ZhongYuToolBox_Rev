@@ -107,10 +107,16 @@
           <el-form-item label="设备型号">
             <el-input v-model="pwdForm.model" placeholder="留空则使用已绑定型号" clearable />
           </el-form-item>
+          <el-form-item label="studentId（选填，填了更精确）">
+            <el-input v-model="pwdForm.studentId" placeholder="留空则按无 studentId 计算" clearable />
+            <div class="pwd-hint">
+              密码在本地计算、不联网。填入 studentId（领创用户 ID）结果更精确；
+              若「应用列表」能正常加载，页面会自动记住它。
+            </div>
+          </el-form-item>
           <el-button
             type="primary"
             :icon="Key"
-            :loading="calcLoading"
             class="pwd-btn"
             @click="doCalc"
           >
@@ -203,7 +209,7 @@ import {
   bindDevice,
   getAllApps,
   getAppDetail,
-  calcPassword,
+  calcAdminCode,
   linspirerProxyUrl,
   type LinspirerApp,
   type LinspirerSession
@@ -227,8 +233,7 @@ const apps = ref<LinspirerApp[]>([])
 const loadingApps = ref(false)
 
 /* ===== 密码 ===== */
-const pwdForm = reactive({ swdid: '', account: '', model: '' })
-const calcLoading = ref(false)
+const pwdForm = reactive({ swdid: '', account: '', model: '', studentId: '' })
 const pwdResult = ref('')
 const pwdDate = ref('')
 
@@ -414,27 +419,20 @@ function openRawDl() {
   window.open(dlUrl.value, '_blank')
 }
 
-async function doCalc() {
+/**
+ * 管理员密码：**纯本地计算**（不联网、不依赖作者服务器）。
+ * 优先级：手填 studentId > 之前联网取到的 sessionStudentId > 不带 studentId。
+ */
+function doCalc() {
   const swdid = pwdForm.swdid.trim() || session.swdid
-  const account = pwdForm.account.trim() || session.account
-  const model = pwdForm.model.trim() || session.model
   if (!swdid) {
     ElMessage.warning('请先填写设备号')
     return
   }
-  calcLoading.value = true
-  try {
-    const pwd = await calcPassword(swdid, account, model, sessionStudentId || undefined)
-    pwdResult.value = pwd
-    pwdDate.value = new Date().toLocaleDateString()
-    if (session.swdid === swdid && !sessionStudentId) {
-      // 尝试缓存 studentId（若本次联网取到）
-    }
-  } catch (e: any) {
-    ElMessage.error('计算失败：' + (e.message || e))
-  } finally {
-    calcLoading.value = false
-  }
+  const sid = pwdForm.studentId.trim() || sessionStudentId || undefined
+  pwdResult.value = calcAdminCode(swdid, sid)
+  pwdDate.value = new Date().toLocaleDateString()
+  ElMessage.success('已按今日日期本地计算（未联网）')
 }
 
 function copyPwd() {
@@ -449,6 +447,12 @@ function copyPwd() {
 .linspirer-page {
   max-width: 960px;
   margin: 0 auto;
+}
+.pwd-hint {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--el-text-color-secondary);
+  margin-top: 4px;
 }
 .welcome {
   padding: 4px 2px 12px;

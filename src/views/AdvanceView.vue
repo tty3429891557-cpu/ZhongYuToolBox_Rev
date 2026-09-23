@@ -7,13 +7,13 @@
     <el-card class="block" header="服务器地址">
       <el-form label-position="top">
         <el-form-item label="API 基地址 (apiBaseUrl)">
-          <el-input v-model="apiBaseUrl" placeholder="https://zyapi.loshop.com.cn" />
+          <el-input v-model="apiBaseUrl" placeholder="http://sxz.api.zykj.org" />
         </el-form-item>
         <el-form-item label="分享服务地址 (shareServer)">
-          <el-input v-model="shareServer" placeholder="https://zytbshareapi.loshop.com.cn" />
+          <el-input v-model="shareServer" placeholder="（分享服务已下线）" />
         </el-form-item>
         <el-form-item label="嵌套 iframe 基地址 (iframeBase)">
-          <el-input v-model="iframeBase" placeholder="https://zyapi.loshop.com.cn" />
+          <el-input v-model="iframeBase" placeholder="http://sxz.api.zykj.org" />
         </el-form-item>
         <div class="actions">
           <el-button type="primary" :loading="saving" @click="save">保存配置</el-button>

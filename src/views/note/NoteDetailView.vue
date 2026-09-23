@@ -12,6 +12,11 @@
         <el-button type="info" :loading="downloading" @click="downloadZip">
           <el-icon><Download /></el-icon>
         </el-button>
+        <el-popconfirm title="将该笔记移入回收站？可撤销" width="220" @confirm="onMoveToRecycle">
+          <template #reference>
+            <el-button type="danger" :icon="Delete" :loading="deleting" />
+          </template>
+        </el-popconfirm>
       </template>
       <!-- 移动端：三个点按钮 + 底部弹出面板（带遮罩，参考 Gblox） -->
       <template v-else>
@@ -119,11 +124,11 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
-import { ArrowLeft, ArrowRight, Document, Download, PictureFilled, MoreFilled } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { ArrowLeft, ArrowRight, Document, Download, PictureFilled, MoreFilled, Delete } from '@element-plus/icons-vue'
 import JSZip from 'jszip'
 import { jsPDF } from 'jspdf'
-import { getNoteResources, getNoteResourcesForZip, type NoteResource } from '@/api/note'
+import { getNoteResources, getNoteResourcesForZip, moveNoteToRecycleBin, restoreNote, type NoteResource } from '@/api/note'
 import { proxyUrl, proxyImgSrc } from '@/utils/proxy'
 import { useIsMobile } from '@/composables/useIsMobile'
 
@@ -153,6 +158,47 @@ const fileName = computed(() => String(route.query.name || ''))
 const loading = ref(false)
 const exporting = ref(false)
 const downloading = ref(false)
+const deleting = ref(false)
+
+/**
+ * 移入回收站（官方 CloudNotes 接口 MoveToRecycleBin）。
+ * 站点没有「回收站浏览」页面，因此操作后立即给出「撤销」入口；
+ * 撤销用接口返回的真实 parentId 恢复，可放回原目录。
+ */
+async function onMoveToRecycle() {
+  if (!fileId.value) return
+  deleting.value = true
+  try {
+    const res = await moveNoteToRecycleBin([fileId.value])
+    // 注意：MoveToRecycleBin 对根目录下的笔记会返回 parentId "-1"，
+    // 而 Restore 只接受 "0" 表示根目录（实测确认），故此处做一次归一化。
+    const raw = String(res?.[0]?.parentId ?? '0')
+    const parentId = raw === '-1' ? '0' : raw
+    await router.push('/note')
+    // 站点没有回收站浏览页，因此立刻给出撤销入口（用返回的真实 parentId 恢复）
+    ElMessageBox.confirm('笔记已移入回收站。是否撤销（放回原目录）？', '已移入回收站', {
+      confirmButtonText: '撤销',
+      cancelButtonText: '不用了',
+      type: 'info',
+      closeOnClickModal: false
+    })
+      .then(async () => {
+        try {
+          await restoreNote(parentId, fileId.value)
+          ElMessage.success('已恢复到原目录')
+        } catch (e: any) {
+          ElMessage.error('恢复失败：' + (e?.message || e))
+        }
+      })
+      .catch(() => {
+        /* 用户选择不撤销 */
+      })
+  } catch (e: any) {
+    ElMessage.error('移入回收站失败：' + (e?.message || e))
+  } finally {
+    deleting.value = false
+  }
+}
 const showSheet = ref(false)
 const progressVisible = ref(false)
 const progressPercent = ref(0)

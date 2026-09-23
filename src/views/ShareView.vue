@@ -1,5 +1,14 @@
 <template>
   <div class="share-page">
+    <el-alert
+      v-if="!shareAvailable"
+      type="warning"
+      :closable="false"
+      show-icon
+      class="share-offline"
+      title="分享服务已下线"
+      description="本站的分享功能依赖作者自建服务（zytbshareapi.loshop.com.cn），该服务已随站点停运且学校侧无等价接口，因此无法创建或访问分享。其余功能不受影响。"
+    />
     <el-tabs v-model="activeTab" class="share-tabs">
       <!-- ===== 创建分享 ===== -->
       <el-tab-pane label="创建分享" name="create">
@@ -256,11 +265,13 @@ import {
 } from '@/api/share'
 import { useAuthStore } from '@/stores/auth'
 import { API_BASE_URL } from '@/config'
+import { SHARE_AVAILABLE } from '@/api/share'
 
 const auth = useAuthStore()
 const route = useRoute()
 const router = useRouter()
 
+const shareAvailable = SHARE_AVAILABLE
 const activeTab = ref('create')
 
 /* ===== 创建分享 ===== */

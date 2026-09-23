@@ -19,10 +19,59 @@ export interface UserInfo {
 }
 
 /** 学校发现（其它学校自适应登录） */
-export async function discoverSchool(code: string): Promise<{ name: string; server: string }> {
-  const resp = await fetch(`https://hagateway.zykj.org/api/discovery/${code}`)
+export interface SchoolInfo {
+  name: string
+  server: string
+  webServer?: string
+  lcid?: string
+}
+
+/**
+ * 查询学校信息。
+ * 注意：未知学校代码时接口仍返回 200，但内容为 `{"name":"Unknown"}`（没有 server 字段），
+ * 旧站未做判断会导致后续 `info.server.startsWith` 直接抛错，这里补上校验。
+ */
+export async function discoverSchool(code: string): Promise<SchoolInfo> {
+  const resp = await fetch(`https://hagateway.zykj.org/api/discovery/${encodeURIComponent(code)}`)
   if (!resp.ok) throw new Error('学校代码无效')
-  return await resp.json()
+  let info: SchoolInfo
+  try {
+    info = await resp.json()
+  } catch {
+    throw new Error('学校信息解析失败')
+  }
+  if (!info || !info.server || info.name === 'Unknown') {
+    throw new Error(`学校代码「${code}」无效或未被收录`)
+  }
+  return info
+}
+
+/**
+ * 由学校代码与 discovery 结果推导可用的 API 基地址候选（按优先级）。
+ *
+ * 2026-09-23 调整：**优先学校原生域名**（`{code}.api.zykj.org`），
+ * 这也是官方 App 实际使用的地址；实测与作者 loshop 代理能力完全一致。
+ * 作者的 loshop 服务随站点停运可能随时下线，故只作为最后的兜底候选。
+ */
+export function buildApiBaseCandidates(code: string, discoveredServer: string): string[] {
+  const list: string[] = []
+  const push = (u?: string) => {
+    if (u && !list.includes(u)) list.push(u)
+  }
+  // 1) discovery 给出的学校服务器（官方 App 用的就是这个）
+  push(discoveredServer)
+  // 2) 由学校代码直接推导的原生地址
+  push(`http://${code}.api.zykj.org`)
+  // 3) 兜底：作者的 loshop 代理域名（仅在原生地址不可用时才会用到）
+  const knownProxy: Record<string, string> = {
+    sxz: 'https://zyapi.loshop.com.cn',
+    sxzsyxx: 'https://zyapi-sxzsyxx.loshop.com.cn',
+    bjbsz: 'https://zyapi-bjbsz.loshop.com.cn'
+  }
+  push(knownProxy[code])
+  const m = /^https?:\/\/([^.]+)\.[^/]*zykj\.org/i.exec(discoveredServer || '')
+  if (m) push(`https://zyapi-${m[1]}.loshop.com.cn`)
+  return list
 }
 
 export async function loginApi(
