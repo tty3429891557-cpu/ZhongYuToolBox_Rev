@@ -66,17 +66,37 @@ function check401(status: number): void {
   }
 }
 
+/**
+ * 统一校验云笔记接口响应并解密 data。
+ *
+ * 修复：原先 `getAllNotes` / `getRecycleNotes` / `getNoteResources` / `getNoteResourcesForZip`
+ * 都不检查 `json.code`。服务端出错时 `json.data` 为空 → `aesDecrypt(undefined)` 返回空串 →
+ * `JSON.parse('')` 抛 `Unexpected end of JSON input`，
+ * 界面弹出这句完全无法定位的话，真正的服务端错误（code/msg）被吞掉了。
+ */
+function decodeNoteData<T = any>(json: any): T {
+  if (!json || typeof json !== 'object') throw new Error('响应格式异常')
+  if (json.code !== 0) {
+    throw new Error(json.msg || `接口返回错误（code=${json.code}）`)
+  }
+  const text = aesDecrypt(json.data)
+  if (!text) {
+    throw new Error('响应解密失败：AES 密钥可能已跨天，刷新页面后重试')
+  }
+  try {
+    return JSON.parse(text) as T
+  } catch {
+    throw new Error('响应内容解析失败（解密结果与预期结构不符）')
+  }
+}
+
 /** 按 parentId 获取某文件夹下的笔记/子文件夹（复刻 loadNotes） */
 export async function getNotesByParentId(parentId = '0'): Promise<NoteItem[]> {
   const params = `parentid=${parentId}&isNoteNode=true`
   const url = notesPath('GetByParentId', aesEncrypt(params))
   const res = await fetch(url, { headers: authHeaders() })
   check401(res.status)
-  const json = await res.json()
-  if (json.code !== 0) {
-    throw new Error(json.msg || '获取笔记失败')
-  }
-  const data = JSON.parse(aesDecrypt(json.data))
+  const data = decodeNoteData<{ noteList?: NoteItem[] }>(await res.json())
   return (data.noteList || []) as NoteItem[]
 }
 
@@ -87,9 +107,8 @@ export async function getAllNotes(): Promise<NoteItem[]> {
     headers: authHeaders()
   })
   check401(res.status)
-  const json = await res.json()
   // 响应体的 data 字段为 AES 加密内容，需解密后才能取 noteList
-  const data = JSON.parse(aesDecrypt(json.data))
+  const data = decodeNoteData<{ noteList?: NoteItem[] }>(await res.json())
   const list: NoteItem[] = data.noteList || []
   return list.filter((item) => item.type === 1 || item.type === 12)
 }
@@ -100,8 +119,7 @@ export async function searchNotes(fileName: string): Promise<NoteItem[]> {
   const url = notesPath('Search', aesEncrypt(query))
   const res = await fetch(url, { method: 'GET', headers: authHeaders() })
   check401(res.status)
-  let data = await res.json()
-  data = JSON.parse(aesDecrypt(data.data))
+  const data = decodeNoteData<{ noteList?: NoteItem[] }>(await res.json())
   const list: NoteItem[] = data.noteList || []
   return list.filter((item) => item.type === 1 || item.type === 12)
 }
@@ -111,8 +129,8 @@ export async function getNoteResources(fileId: string): Promise<NoteResource[]> 
   const url = resourcesPath('GetByFileId', aesEncrypt('fileId=' + fileId))
   const res = await fetch(url, { method: 'GET', headers: authHeaders() })
   check401(res.status)
-  const data = await res.json()
-  return (JSON.parse(aesDecrypt(data.data)).resourceList || []) as NoteResource[]
+  const data = decodeNoteData<{ resourceList?: NoteResource[] }>(await res.json())
+  return (data.resourceList || []) as NoteResource[]
 }
 
 /**
@@ -122,11 +140,12 @@ export async function getNoteResources(fileId: string): Promise<NoteResource[]> 
  * 否则「下载笔记」会 404 报错。
  */
 export async function getNoteResourcesForZip(fileId: string): Promise<NoteResource[]> {
+  if (!fileId) return []
   const url = resourcesPath('GetByFileId', aesEncrypt('fileId=' + fileId))
   const res = await fetch(url, { method: 'GET', headers: authHeaders() })
   check401(res.status)
-  const data = await res.json()
-  return (JSON.parse(aesDecrypt(data.data)).resourceList || []) as NoteResource[]
+  const data = decodeNoteData<{ resourceList?: NoteResource[] }>(await res.json())
+  return (data.resourceList || []) as NoteResource[]
 }
 
 /* ============ 回收站 / 删除（依据官方云笔记 APK 接口定义） ============
@@ -201,8 +220,7 @@ export async function getRecycleNotes(): Promise<NoteItem[]> {
     headers: authHeaders()
   })
   check401(res.status)
-  const json = await res.json()
-  const data = JSON.parse(aesDecrypt(json.data))
+  const data = decodeNoteData<{ noteList?: NoteItem[] }>(await res.json())
   const list: NoteItem[] = data.noteList || []
   return list.filter((item) => (item as any).isRecycleBin === true)
 }

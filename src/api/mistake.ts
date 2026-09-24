@@ -3,7 +3,7 @@
  */
 import { request } from '@/utils/request'
 import { API_BASE_URL } from '@/config'
-import { proxyUrl } from '@/utils/proxy'
+import { proxyImgSrc } from '@/utils/proxy'
 
 export interface MistakeItem {
   id: string | number
@@ -81,17 +81,23 @@ export async function fetchQstHtml(qstPath: string): Promise<string> {
   return resp.text()
 }
 
-/** 笔记截图：fileList.json → screenshot.png */
+/**
+ * 笔记截图：fileList.json → screenshot.png
+ *
+ * 修复：原实现用 proxyUrl()，而远端下载代理（loshop）已随作者站点停运，
+ * 结果笔记截图**永远取不到**（静默返回 null，界面上就是「笔记」区块不显示）。
+ * 改用 proxyImgSrc()：OSS / 中育 CDN 直连，只有真正需要中转的才回落代理。
+ */
 export async function fetchNoteScreenshot(noteUrl: string): Promise<string | null> {
   try {
-    const flResp = await fetch(proxyUrl(noteUrl))
+    const flResp = await fetch(proxyImgSrc(noteUrl))
     if (!flResp.ok) return null
     const fileList = await flResp.json()
     const pngEntry = (fileList || []).find(
       (f: any) => f.url && f.url.toLowerCase().endsWith('screenshot.png')
     )
     if (!pngEntry) return null
-    return proxyUrl(pngEntry.url)
+    return proxyImgSrc(pngEntry.url)
   } catch {
     return null
   }

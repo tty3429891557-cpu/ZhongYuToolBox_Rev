@@ -146,13 +146,13 @@
           <!-- 错题 -->
           <template v-if="isType('mistake')">
             <el-card v-if="content.stem" class="block" header="题目">
-              <div class="html" v-html="content.stem" />
+              <div class="html" v-html="safeStem" />
             </el-card>
             <el-card v-if="content.answers" class="block" header="答案">
-              <div class="html" v-html="content.answers" />
+              <div class="html" v-html="safeAnswers" />
             </el-card>
             <el-card v-if="content.analysis && content.analysis.length" class="block" header="解析">
-              <div class="html" v-html="content.analysis.join('<hr>')" />
+              <div class="html" v-html="safeAnalysis" />
             </el-card>
             <el-card v-if="content.note_screenshot" class="block" header="笔记截图">
               <el-image :src="content.note_screenshot" fit="contain" class="note-img"
@@ -179,7 +179,7 @@
           <template v-else-if="isType('course') || isType('chapter')">
             <el-card class="block">
               <div v-if="content.description" class="muted desc">{{ content.description }}</div>
-              <div class="html" v-html="content.content || '（无正文）'" />
+              <div class="html" v-html="safeCourseContent" />
             </el-card>
           </template>
 
@@ -266,6 +266,8 @@ import {
 import { useAuthStore } from '@/stores/auth'
 import { API_BASE_URL } from '@/config'
 import { SHARE_AVAILABLE } from '@/api/share'
+import { safeHtml } from '@/utils/sanitize'
+import { copyText as copyToClipboard } from '@/utils/download'
 
 const auth = useAuthStore()
 const route = useRoute()
@@ -382,6 +384,17 @@ const currentShareId = ref('')
 const contentMeta = computed(() => content.value?._meta || ({} as any))
 const contentResourceType = computed(() => (contentMeta.value as any).resource_type as ShareResourceType)
 
+/**
+ * 分享内容来自服务端（分享服务由第三方托管），走 v-html 前必须净化。
+ * 解析数组要**逐段净化后再 join**，否则 join 出来的 <hr> 会成为注入载体。
+ */
+const safeStem = computed(() => safeHtml(content.value?.stem))
+const safeAnswers = computed(() => safeHtml(content.value?.answers))
+const safeAnalysis = computed(() =>
+  (content.value?.analysis || []).map((s: string) => safeHtml(s)).filter(Boolean).join('<hr>')
+)
+const safeCourseContent = computed(() => safeHtml(content.value?.content || '（无正文）'))
+
 function isType(t: ShareResourceType) {
   return contentResourceType.value === t
 }
@@ -476,11 +489,16 @@ async function submitPwd() {
 }
 
 /* ===== 工具 ===== */
-function copyText(text: string) {
-  navigator.clipboard
-    .writeText(text)
-    .then(() => ElMessage.success('已复制'))
-    .catch(() => ElMessage.error('复制失败'))
+/**
+ * 复制。
+ * 修复：原实现只用 navigator.clipboard，而站点跑在 http://局域网IP 或 http://公网IP 时
+ * 不是安全上下文，Clipboard API 直接 reject → 一律提示「复制失败」。
+ * 改用带 execCommand 回退的统一工具。
+ */
+async function copyText(text: string) {
+  const ok = await copyToClipboard(text)
+  if (ok) ElMessage.success('已复制')
+  else ElMessage.error('复制失败，请手动选中链接复制')
 }
 function openRaw(url: string) {
   window.open(url, '_blank')

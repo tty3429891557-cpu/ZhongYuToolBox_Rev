@@ -75,12 +75,16 @@ const routes: RouteRecordRaw[] = [
   { path: '/donate', name: 'donate', component: () => import('@/views/DonateView.vue'), meta: { title: '支持作者' } },
   { path: '/download', name: 'download', component: () => import('@/views/DownloadView.vue'), meta: { title: '应用下载', keepAlive: true } },
   { path: '/system', name: 'system', component: () => import('@/views/SystemInfoView.vue'), meta: { title: '系统信息', keepAlive: true } },
-  { path: '/proxy', name: 'proxy', component: () => import('@/views/ProxyView.vue'), meta: { title: '下载加速插件' } }
+  { path: '/proxy', name: 'proxy', component: () => import('@/views/ProxyView.vue'), meta: { title: '下载加速插件' } },
+  // 兜底 404：原实现没有通配路由，hash 里出现未定义路径时 router-view 渲染为空、整屏空白且无任何提示
+  { path: '/:pathMatch(.*)*', name: 'not-found', component: Placeholder, meta: { title: '页面不存在' } }
 ]
 
 const router = createRouter({
   history: createWebHashHistory(),
-  routes
+  routes,
+  // 切换页面后回到顶部（内容区是 .content 内部滚动，这里只处理窗口滚动）
+  scrollBehavior: () => ({ top: 0, left: 0 })
 })
 
 // 未登录拦截（登录页除外）

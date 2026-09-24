@@ -7,7 +7,7 @@
       <!-- 桌面端：直接按钮 -->
       <template v-if="!isMobile">
         <el-button type="primary" :icon="View" @click="openRaw">打开原图</el-button>
-        <el-button :icon="Download" @click="download">下载</el-button>
+        <el-button :icon="Download" :loading="downloading" @click="download">下载</el-button>
       </template>
       <!-- 移动端：三个点按钮 + 底部弹出面板 -->
       <template v-else>
@@ -58,7 +58,9 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowLeft, View, Download, Picture, MoreFilled } from '@element-plus/icons-vue'
-import { proxyImgSrc, proxyUrl } from '@/utils/proxy'
+import { ElMessage } from 'element-plus'
+import { proxyImgSrc } from '@/utils/proxy'
+import { downloadUrl } from '@/utils/download'
 import { useIsMobile } from '@/composables/useIsMobile'
 
 const { isMobile } = useIsMobile()
@@ -71,6 +73,7 @@ const size = ref<string>((route.query.size as string) || '')
 const createTime = ref<string>((route.query.createTime as string) || '')
 const id = ref<string>((route.query.id as string) || '')
 const loading = ref(false)
+const downloading = ref(false)
 const showSheet = ref(false)
 
 const imgSrc = computed(() => proxyImgSrc(picture.value))
@@ -91,18 +94,26 @@ function goBack() {
 }
 
 function openRaw() {
-  if (picture.value) window.open(proxyUrl(picture.value), '_blank')
+  if (picture.value) window.open(proxyImgSrc(picture.value), '_blank')
 }
 
-function download() {
-  if (!picture.value) return
-  const a = document.createElement('a')
-  a.href = proxyUrl(picture.value)
-  a.download = name.value || 'image'
-  a.target = '_blank'
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
+/**
+ * 下载原图。
+ * 修复：原实现把跨域 URL 直接赋给 a.href 并加 download 属性 ——
+ * 对跨域地址浏览器会**忽略 download**，实际变成跳转打开而不是下载。
+ * 改为先取成 blob 再走本地下载。
+ */
+async function download() {
+  if (!picture.value || downloading.value) return
+  downloading.value = true
+  try {
+    const fromUrl = decodeURIComponent(picture.value.split('?')[0].split('/').pop() || '')
+    await downloadUrl(proxyImgSrc(picture.value), fromUrl || name.value || 'image')
+  } catch (e: any) {
+    ElMessage.error('下载失败：' + (e?.message || e))
+  } finally {
+    downloading.value = false
+  }
 }
 
 function onAction(cmd: string) {

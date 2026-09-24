@@ -52,7 +52,8 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowLeft, Picture } from '@element-plus/icons-vue'
-import { proxyUrl } from '@/utils/proxy'
+import { proxyImgSrc } from '@/utils/proxy'
+import { safeHtml } from '@/utils/sanitize'
 import {
   getMistakeDetail,
   fetchQstHtml,
@@ -84,13 +85,14 @@ function goBack() {
 function parseQstHtml(html: string): { stem: string; answer: string; analysis: string } {
   const parser = new DOMParser()
   const doc = parser.parseFromString(html, 'text/html')
-  const stem = doc.querySelector('.stem')?.innerHTML || ''
+  // 题干/答案/解析来自服务端，稍后会用 v-html 渲染，必须先净化（防内联事件 XSS）
+  const stem = safeHtml(doc.querySelector('.stem')?.innerHTML || '')
 
   let answer = ''
   const answerEl = doc.querySelector('.answers')
   if (answerEl) {
     answerEl.querySelectorAll('h3').forEach((h) => h.remove())
-    answer = answerEl.innerHTML.trim()
+    answer = safeHtml(answerEl.innerHTML.trim())
   }
 
   let analysis = ''
@@ -100,7 +102,8 @@ function parseQstHtml(html: string): { stem: string; answer: string; analysis: s
     analysisEls.forEach((el) => {
       const clone = el.cloneNode(true) as HTMLElement
       clone.querySelectorAll('h3').forEach((h) => h.remove())
-      const t = clone.innerHTML.trim()
+      // 逐段净化后再 join，避免 join 出来的 <hr> 被当成注入载体
+      const t = safeHtml(clone.innerHTML.trim())
       if (t) parts.push(t)
     })
     analysis = parts.join('<hr>')
@@ -141,7 +144,8 @@ async function load() {
     }
 
     if (detail.pictureNote && detail.pictureNote.length > 0) {
-      picNotes.value = detail.pictureNote.map((u: string) => proxyUrl(u))
+      // 改用 proxyImgSrc：图片笔记多为 OSS 直连地址，经已下线的 loshop 代理会全部加载失败
+      picNotes.value = detail.pictureNote.map((u: string) => proxyImgSrc(u))
     }
   } catch (e: any) {
     window.alert('加载详情失败：' + (e.message || e))

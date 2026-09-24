@@ -33,17 +33,6 @@ const FT = 2
 const FE = ''
 const FO = '0'
 
-/** 缓存的 OSS 根地址 */
-let ossBaseUrl = ''
-
-export function getOssBaseUrl(): string {
-  return ossBaseUrl
-}
-
-export function setOssBaseUrl(url: string): void {
-  ossBaseUrl = url
-}
-
 function apiBase(): string {
   return localStorage.getItem('apiBaseUrl') || DEFAULT_API_BASE
 }
@@ -84,6 +73,46 @@ export interface StsCredential {
   securityToken: string
   bucket?: string
   endpoint?: string
+}
+
+/**
+ * STS 凭证缓存。
+ *
+ * 修复：原实现**每次上传都先换一次 STS**。PDF 上传云笔记时，
+ * 一个 100 页的 PDF 就是 8 个模板文件 + 100 张图 = 108 次上传 → 216 次请求，
+ * 全部串行，几分钟都跑不完，界面像卡死一样。
+ *
+ * 实际上 STS 凭证的有效期远大于单次上传，且同一 (userId, fc) 的凭证可复用。
+ * 这里缓存 20 分钟；离到期不足 60 秒时提前刷新，避免上传中途失效。
+ */
+const STS_TTL_MS = 20 * 60 * 1000
+const STS_REFRESH_MARGIN_MS = 60 * 1000
+const stsCache = new Map<string, { cred: StsCredential; expireAt: number }>()
+
+/** 取（或换）STS 凭证 */
+export async function getStsCredential(
+  userId: string,
+  fc: string,
+  nonce: string
+): Promise<StsCredential> {
+  const key = `${userId}|${fc}`
+  const now = Date.now()
+  const hit = stsCache.get(key)
+  if (hit && hit.expireAt > now + STS_REFRESH_MARGIN_MS) {
+    return hit.cred
+  }
+  const cred = await generateStsToken(userId, fc, nonce)
+  stsCache.set(key, { cred, expireAt: now + STS_TTL_MS })
+  return cred
+}
+
+/** 上传出错且怀疑是凭证过期时调用，强制下次重新换取 */
+export function invalidateStsCache(userId?: string, fc?: string): void {
+  if (!userId || !fc) {
+    stsCache.clear()
+    return
+  }
+  stsCache.delete(`${userId}|${fc}`)
 }
 
 /** 请求 STS 临时凭证（复刻 GenerateTokenV2Async 调用） */
@@ -151,7 +180,7 @@ export async function uploadFile(
   const remoteFileName = fileNameInput.trim() || (file as File).name
   const dateStr = dateStamp()
 
-  const result = await generateStsToken(userId, fc, nonce)
+  const result = await getStsCredential(userId, fc, nonce)
 
   const client = new OSS({
     region: result.region || 'oss-cn-hangzhou',
@@ -257,33 +286,16 @@ export async function uploadGalleryImage(file: File, userId: string): Promise<Ga
   return { url: endpoint.replace(/\/+$/, '') + '/' + objectKey, name: nonce, objectKey }
 }
 
-/** 获取并缓存 OSS 根地址（复刻 fetchOssBaseUrl） */
-export async function fetchOssBaseUrl(userId: string): Promise<string> {
-  if (ossBaseUrl) return ossBaseUrl
-  const token = localStorage.getItem('token')
-  if (!token) throw new Error('未登录')
-
-  const nonce = generateNonce()
-  const ts = Date.now()
-  const rawStr = `${userId}+note_v2+res+1++0+${nonce}+${ts}`
-  const sign = md5Upper(rawStr)
-
-  const resp = await fetch(`${apiBase()}/api/services/app/ObjectStorage/GenerateTokenV2Async`, {
-    method: 'POST',
-    headers: {
-      Accept: 'application/json',
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({ fc: 1, fr: 1, ft: 2, fe: '', fo: '0', nonce, ts, sign })
-  })
-  const data = await resp.json()
-  if (!data.result) throw new Error('获取 OSS 配置失败')
-  const region = data.result.region || 'oss-cn-hangzhou'
-  const bucket = data.result.bucket || 'ezy-sxz'
-  ossBaseUrl = `https://${bucket}.${region}.aliyuncs.com/`
-  return ossBaseUrl
-}
+/**
+ * 已删除 fetchOssBaseUrl / getOssBaseUrl / setOssBaseUrl。
+ *
+ * 删除原因（对应排查项 P1-25）：
+ *  1. 全工程没有任何调用方（上传流程用的是 uploadFile 返回的真实 endpoint）；
+ *  2. 它本身有 bug —— 签名串写成 `note_v2+res+1++0`（ft=1），
+ *     而请求体发的是 `{fc:1, fr:1, ft:2, fe:'', fo:'0'}`，两者不一致，
+ *     服务端校验签名必定失败；
+ *  3. 兜底桶写死 `ezy-sxz`（省锡中），其它学校会拿到错误的桶。
+ */
 
 /** 从服务端获取当前登录用户 ID（复刻 getUserId） */
 export async function fetchUserId(): Promise<string> {

@@ -19,8 +19,13 @@
       <!-- 视频（DPlayer） -->
       <div v-if="kind === 'video'" ref="videoRef" class="video-box"></div>
 
-      <!-- PDF（pdfjs 逐页渲染） -->
-      <div v-else-if="kind === 'pdf'" ref="pdfRef" class="pdf-box" v-loading="pdfLoading"></div>
+      <!-- PDF（pdfjs 按视口懒渲染） -->
+      <div v-else-if="kind === 'pdf'" class="pdf-body">
+        <div ref="pdfRef" class="pdf-box" v-loading="pdfLoading"></div>
+        <div v-if="pdfTotal > 0" class="pdf-tip muted">
+          共 {{ pdfTotal }} 页 · 已渲染 {{ pdfRendered }}/{{ pdfTotal }} 页（滚动自动加载，避免一次性渲染导致卡死）
+        </div>
+      </div>
 
       <!-- PPT（@vue-office/pptx 组件渲染） -->
       <div v-else-if="kind === 'pptx'" class="pptx-box">
@@ -54,7 +59,8 @@ import { ArrowLeft, Download } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import DPlayer from 'dplayer'
 import VueOfficePptx from '@vue-office/pptx'
-import { proxyUrl } from '@/utils/proxy'
+import { proxyImgSrc } from '@/utils/proxy'
+import { downloadBlob, downloadUrl } from '@/utils/download'
 
 const route = useRoute()
 const router = useRouter()
@@ -66,6 +72,8 @@ const name = String(route.query.name || '')
 const pdfRef = ref<HTMLElement | null>(null)
 const videoRef = ref<HTMLElement | null>(null)
 const pdfLoading = ref(false)
+const pdfTotal = ref(0)
+const pdfRendered = ref(0)
 const pptxError = ref(false)
 const downloading = ref(false)
 let dp: DPlayer | null = null
@@ -80,19 +88,9 @@ async function download() {
   if (!url || downloading.value) return
   downloading.value = true
   try {
-    const resp = await fetch(proxyUrl(url))
-    if (!resp.ok) throw new Error('下载失败: ' + resp.status)
-    const blob = await resp.blob()
-    const objUrl = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = objUrl
     // 用 URL 中的文件名，兜底用传入的 name
     const fromUrl = decodeURIComponent(url.split('?')[0].split('/').pop() || '')
-    a.download = fromUrl || name || 'download.pdf'
-    document.body.appendChild(a)
-    a.click()
-    a.remove()
-    URL.revokeObjectURL(objUrl)
+    await downloadUrl(proxyImgSrc(url), fromUrl || name || 'download.pdf')
   } catch (e: any) {
     ElMessage.error('下载失败：' + (e?.message || e))
   } finally {
@@ -106,28 +104,93 @@ function onPptxError(e: any) {
 }
 
 /* ---------- PDF 渲染（pdfjs-dist） ---------- */
+type PdfDoc = { numPages: number; getPage: (n: number) => Promise<any>; destroy: () => Promise<void> }
+let pdfDoc: PdfDoc | null = null
+let pageObserver: IntersectionObserver | null = null
+let destroyed = false
+
+/** 渲染单页到占位容器 */
+async function renderPage(doc: PdfDoc, host: HTMLElement, pageNo: number) {
+  if (destroyed) return
+  try {
+    const page = await doc.getPage(pageNo)
+    if (destroyed) return
+    const viewport = page.getViewport({ scale: 1.4 })
+    const canvas = document.createElement('canvas')
+    canvas.width = viewport.width
+    canvas.height = viewport.height
+    canvas.style.width = '100%'
+    canvas.style.marginBottom = '8px'
+    host.innerHTML = ''
+    host.style.minHeight = ''
+    host.appendChild(canvas)
+    const task = page.render({ canvasContext: canvas.getContext('2d')!, viewport })
+    await task.promise
+    pdfRendered.value++
+  } catch (e) {
+    host.innerHTML = ''
+    host.textContent = `第 ${pageNo} 页渲染失败`
+  }
+}
+
 async function renderPdf(src: string) {
   if (!pdfRef.value) return
   pdfLoading.value = true
   try {
     const pdfjs = await import('pdfjs-dist/build/pdf.mjs')
-    if (!pdfjs.GlobalWorkerOptions.workerPort) {
+    if (!pdfjs.GlobalWorkerOptions.workerPort && !pdfjs.GlobalWorkerOptions.workerSrc) {
+      // 老 WebView 不支持 module Worker，退回到 workerSrc（非 module）形式
       const workerUrl = (await import('pdfjs-dist/build/pdf.worker.min.mjs?url')).default
-      pdfjs.GlobalWorkerOptions.workerPort = new Worker(workerUrl, { type: 'module' })
+      try {
+        pdfjs.GlobalWorkerOptions.workerPort = new Worker(workerUrl, { type: 'module' })
+      } catch {
+        pdfjs.GlobalWorkerOptions.workerSrc = workerUrl
+      }
     }
     const container = pdfRef.value
     container.innerHTML = ''
-    const doc = await pdfjs.getDocument(proxyUrl(src)).promise
+    pdfRendered.value = 0
+
+    // 修复一：原来用 proxyUrl()，默认前缀是已下线的 loshop 下载代理 → 所有 PDF 打不开。
+    // 改用 proxyImgSrc()：OSS / 中育 CDN 直连，非 CDN 才回落到代理。
+    const doc = (await pdfjs.getDocument(proxyImgSrc(src)).promise) as PdfDoc
+    pdfDoc = doc
+    pdfTotal.value = doc.numPages
+
+    /**
+     * 修复二：原实现一次性把所有页渲染成 canvas。
+     * 100 页 PDF = 100 张 ~1400×2000 的 canvas，显存/内存暴涨直至标签页崩溃。
+     * 改为先建占位块，再由 IntersectionObserver 在滚动到附近时才真正渲染。
+     */
+    const hosts: HTMLElement[] = []
     for (let i = 1; i <= doc.numPages; i++) {
-      const page = await doc.getPage(i)
-      const viewport = page.getViewport({ scale: 1.4 })
-      const canvas = document.createElement('canvas')
-      canvas.width = viewport.width
-      canvas.height = viewport.height
-      canvas.style.width = '100%'
-      canvas.style.marginBottom = '8px'
-      container.appendChild(canvas)
-      await page.render({ canvasContext: canvas.getContext('2d')!, viewport }).promise
+      const host = document.createElement('div')
+      host.className = 'pdf-page-host'
+      host.dataset.page = String(i)
+      host.style.width = '100%'
+      host.style.minHeight = '500px'
+      container.appendChild(host)
+      hosts.push(host)
+    }
+
+    if (typeof IntersectionObserver !== 'undefined') {
+      pageObserver = new IntersectionObserver(
+        (entries) => {
+          for (const entry of entries) {
+            if (!entry.isIntersecting) continue
+            const el = entry.target as HTMLElement
+            pageObserver?.unobserve(el)
+            void renderPage(doc, el, Number(el.dataset.page))
+          }
+        },
+        { rootMargin: '700px 0px' }
+      )
+      hosts.forEach((h) => pageObserver!.observe(h))
+    } else {
+      // 极老浏览器没有 IO：退化为顺序渲染，但限制首屏页数避免一次性爆内存
+      for (let i = 1; i <= Math.min(doc.numPages, 20); i++) {
+        await renderPage(doc, hosts[i - 1], i)
+      }
     }
   } catch (e: any) {
     ElMessage.error('PDF 加载失败：' + (e.message || e))
@@ -136,11 +199,24 @@ async function renderPdf(src: string) {
   }
 }
 
+function cleanupPdf() {
+  destroyed = true
+  pageObserver?.disconnect()
+  pageObserver = null
+  try {
+    void pdfDoc?.destroy()
+  } catch {
+    /* ignore */
+  }
+  pdfDoc = null
+}
+
 function initDPlayer(src: string) {
   if (!videoRef.value) return
+  // 修复：同样改用 proxyImgSrc()，否则视频也走已下线的 loshop 代理，一律加载失败
   dp = new DPlayer({
     container: videoRef.value,
-    video: { url: proxyUrl(src) }
+    video: { url: proxyImgSrc(src) }
   })
 }
 
@@ -152,6 +228,8 @@ onMounted(() => {
 onBeforeUnmount(() => {
   dp?.destroy()
   dp = null
+  // 释放 PDF 文档与页面观察器（原实现没有，来回切附件会持续堆积内存）
+  cleanupPdf()
 })
 </script>
 
@@ -209,9 +287,15 @@ onBeforeUnmount(() => {
 .video-box :deep(.dplayer) {
   width: 100%;
 }
-.pdf-box {
+.pdf-body {
   width: 100%;
   max-width: 900px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.pdf-box {
+  width: 100%;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -219,6 +303,10 @@ onBeforeUnmount(() => {
   background: #fff;
   border-radius: 8px;
   padding: 12px;
+}
+.pdf-tip {
+  padding: 8px 0 4px;
+  font-size: 12px;
 }
 .pptx-box {
   width: 100%;

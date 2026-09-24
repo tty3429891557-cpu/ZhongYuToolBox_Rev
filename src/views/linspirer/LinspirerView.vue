@@ -215,6 +215,7 @@ import {
   type LinspirerSession
 } from '@/api/linspirer'
 import { useAuthStore } from '@/stores/auth'
+import { copyText } from '@/utils/download'
 
 const auth = useAuthStore()
 
@@ -409,11 +410,11 @@ function openDownload(url: string, name: string) {
   void name
 }
 
-function copyDl() {
-  navigator.clipboard
-    .writeText(dlUrl.value)
-    .then(() => ElMessage.success('已复制下载链接'))
-    .catch(() => ElMessage.error('复制失败'))
+async function copyDl() {
+  // 改用带回退的统一工具：http 非安全上下文下 Clipboard API 不可用
+  const ok = await copyText(dlUrl.value)
+  if (ok) ElMessage.success('已复制下载链接')
+  else ElMessage.error('复制失败，请手动选中复制')
 }
 function openRawDl() {
   window.open(dlUrl.value, '_blank')
@@ -435,11 +436,10 @@ function doCalc() {
   ElMessage.success('已按今日日期本地计算（未联网）')
 }
 
-function copyPwd() {
-  navigator.clipboard
-    .writeText(pwdResult.value)
-    .then(() => ElMessage.success('已复制密码'))
-    .catch(() => ElMessage.error('复制失败'))
+async function copyPwd() {
+  const ok = await copyText(pwdResult.value)
+  if (ok) ElMessage.success('已复制密码')
+  else ElMessage.error('复制失败，请手动选中复制')
 }
 </script>
 

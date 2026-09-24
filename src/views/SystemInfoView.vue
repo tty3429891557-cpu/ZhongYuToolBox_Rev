@@ -118,7 +118,7 @@
     <el-dialog v-model="noticeVisible" :title="notice?.title || '公告'" width="640px">
       <div v-if="notice" class="notice">
         <div class="muted">{{ notice.creationTime }}</div>
-        <div class="notice-body" v-html="notice.content"></div>
+        <div class="notice-body" v-html="safeNoticeHtml"></div>
       </div>
       <el-empty v-else description="公告不存在" />
     </el-dialog>
@@ -126,7 +126,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import {
@@ -147,6 +147,7 @@ import {
   type UnreadItem,
   type NoticeInfo
 } from '@/api/system'
+import { safeHtml } from '@/utils/sanitize'
 
 const loading = reactive({ todo: false, ability: false, msg: false, topic: false, setting: false })
 
@@ -162,6 +163,9 @@ const whiteUrls = ref('')
 const commonSites = ref<any[]>([])
 const notice = ref<NoticeInfo | null>(null)
 const noticeVisible = ref(false)
+
+/** 公告正文是服务端富文本，走 v-html 前必须净化（防内联事件 XSS） */
+const safeNoticeHtml = computed(() => safeHtml(notice.value?.content))
 
 const TODO_LABELS: Record<string, string> = {
   homeworkCount: '作业',

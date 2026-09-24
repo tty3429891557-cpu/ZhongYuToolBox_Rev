@@ -90,7 +90,14 @@ export function generateAesKey(): string {
   return a + f + s
 }
 
-/** 学校选项（复刻 index.html #school_select） */
+/**
+ * 学校选项（登录页下拉）。
+ * 原先只有「省锡中」和「其它学校」，其它学校必须手填代码；
+ * 现在把已确认可用的学校直接列出来，选中即用预设后端，不需要再输代码。
+ *
+ * 注意：必须与 PRESET_API_BASE / PRESET_WEB_BASE 的键保持一致，
+ * 否则选中后 `login()` 里的 `PRESET_API_BASE[schoolSelect]` 取不到值。
+ */
 export interface SchoolOption {
   value: string
   label: string
@@ -98,6 +105,8 @@ export interface SchoolOption {
 
 export const SCHOOLS: SchoolOption[] = [
   { value: 'sxz', label: '省锡中' },
+  { value: 'sxzsyxx', label: '省锡中双语学校' },
+  { value: 'bjbsz', label: '北京市第八十中学' },
   { value: 'other', label: '其它学校' }
 ]
 
@@ -159,8 +168,10 @@ export const OSS_PREFIXES: string[] = [
 export function resolveIframeBase(apiBaseUrl: string): string {
   const m1 = /^https?:\/\/([^.]+)\.api\d*\.zykj\.org/i.exec(apiBaseUrl || '')
   if (m1) return `http://${m1[1]}.school.zykj.org`
-  const m2 = /^https://////zyapi-(.+)//.loshop//.com//.cn/i.exec(apiBaseUrl || '')
+  const m2 = /^https:\/\/zyapi-([^.]+)\.loshop\.com\.cn\/?$/i.exec(apiBaseUrl || '')
   if (m2) return `https://zyapi-${m2[1]}.loshop.com.cn`
-  if ((apiBaseUrl || '').toLowerCase().includes('zyapi.loshop.com.cn')) return 'https://zyapi.loshop.com.cn'
-  return IFRAME_BASE
+  if (/^https:\/\/zyapi\.loshop\.com\.cn/i.test(apiBaseUrl || '')) return 'https://zyapi.loshop.com.cn'
+  // 兜底：优先按当前登录学校代码推导，避免沿用 localStorage 里其他学校的残留值
+  const code = ls.getItem('schoolCode') || DEFAULT_SCHOOL_CODE
+  return PRESET_WEB_BASE[code] || nativeWebBase(code)
 }

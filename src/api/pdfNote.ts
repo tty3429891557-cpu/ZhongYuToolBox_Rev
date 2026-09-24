@@ -7,15 +7,59 @@
 import { DEFAULT_API_BASE } from '@/config'
 
 import { aesEncrypt } from '@/utils/crypto'
-import { dateStamp, uploadFile } from '@/utils/oss'
+import { dateStamp, uploadFile, invalidateStsCache } from '@/utils/oss'
 import { convertPdfToImages, type PdfPageImage } from '@/utils/pdf'
+
+/**
+ * 有限并发地执行任务（保持输入顺序）。
+ *
+ * 修复：原实现把模板文件与每页图片**全部串行上传**。
+ * 100 页 PDF = 108 次串行 OSS PUT，加上每次换取 STS，
+ * 几 MB 的文件要跑好几分钟，期间界面完全无响应。
+ * 改为 4 路并发，并配合 utils/oss 里的 STS 凭证缓存。
+ */
+async function mapLimit<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const results = new Array<R>(items.length)
+  let cursor = 0
+  async function runner() {
+    for (;;) {
+      const i = cursor++
+      if (i >= items.length) return
+      results[i] = await worker(items[i], i)
+    }
+  }
+  const lanes = Math.min(limit, items.length)
+  await Promise.all(Array.from({ length: lanes }, runner))
+  return results
+}
+
+const UPLOAD_CONCURRENCY = 4
 
 const TEMPLATE_BASE = 'example/'
 const TEMPLATE_UUID = 'a888b5fb-e65d-4611-a3af-1f80a0fb6ced'
 
-/** 图片资源固定文件名（复刻 pdf-upload.js） */
-const IMG_FILENAME =
-  'B466246B6F67160E63431159941CD9A9screenCaptureb59d24b6-00fa-4f53-bc4f-1df255a5101a.webp'
+/**
+ * 图片资源固定文件名的**主体部分**（复刻 pdf-upload.js）。
+ *
+ * 修复：原实现把后缀也写死成 `.webp`，但 convertPdfToImages 在浏览器不支持 webp 编码时
+ * 会返回原始格式（通常是 png/jpeg），于是对象键后缀与真实内容不符，
+ * 部分客户端按扩展名解析会失败。现改为按 blob.type 决定后缀。
+ */
+const IMG_BASENAME =
+  'B466246B6F67160E63431159941CD9A9screenCaptureb59d24b6-00fa-4f53-bc4f-1df255a5101a'
+
+/** 按真实 MIME 取扩展名（含点） */
+function imageExtOf(blob: Blob): string {
+  const t = (blob.type || '').toLowerCase()
+  if (t.includes('png')) return '.png'
+  if (t.includes('jpeg') || t.includes('jpg')) return '.jpg'
+  if (t.includes('webp')) return '.webp'
+  return '.webp'
+}
 
 const TEMPLATE_FILES = [
   'page_router.bin',
@@ -80,6 +124,15 @@ export function generateCustomFileId(prefix = 'h', length = 32): string {
 /** 生成页 hash（复刻 generatePageHash） */
 function generatePageHash(): string {
   return String(Date.now() + Math.floor(Math.random() * 1000))
+}
+
+/** 固定格式时间戳：YYYY-MM-DD HH:mm:ss（不依赖浏览器 locale） */
+function formatTimestamp(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, '0')
+  return (
+    `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ` +
+    `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+  )
 }
 
 /** 加载模板 bin 文件（复刻 loadTemplateFiles） */
@@ -214,19 +267,15 @@ export async function uploadPdfAsNote(opts: UploadPdfOptions): Promise<PdfPageIm
         })
 
   const userId = getUserIdFromToken()
+  if (!userId) throw new Error('无法从登录凭据解析用户 ID，请重新登录后再试')
   const customFileId = generateCustomFileId()
   const todayStr = dateStamp()
-  const timestamp = new Date()
-    .toLocaleString('zh-CN', {
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: false
-    })
-    .replace(/\//g, '-')
+  /**
+   * 修复：原实现用 `toLocaleString('zh-CN', {...})` 生成时间戳，
+   * 不同浏览器 / ICU 版本输出格式不一致（可能是 `2026/9/23`、`2026年9月23日`、
+   * 也可能带上午/下午），服务端解析可能出错。改为手写固定格式。
+   */
+  const timestamp = formatTimestamp(new Date())
 
   // 步骤3：上传模板文件到 OSS
   report(50, '正在上传模板文件...')
@@ -245,11 +294,11 @@ export async function uploadPdfAsNote(opts: UploadPdfOptions): Promise<PdfPageIm
   const ossRoot = urlObj.protocol + '//' + urlObj.host + '/'
   delete templates['page_router.bin']
 
-  for (const f of Object.keys(templates)) {
-    if (f.includes('/')) {
-      await uploadFile(templates[f], userId, 'note_v2', customFileId, ossPageHash + '/' + f)
-    }
-  }
+  // 剩余模板文件并发上传（原实现串行）
+  const restTemplates = Object.keys(templates).filter((f) => f.includes('/'))
+  await mapLimit(restTemplates, UPLOAD_CONCURRENCY, (f) =>
+    uploadFile(templates[f], userId, 'note_v2', customFileId, ossPageHash + '/' + f)
+  )
 
   // 步骤4：逐页上传图片并构建 resourceList
   report(65, '正在上传图片...')
@@ -257,24 +306,35 @@ export async function uploadPdfAsNote(opts: UploadPdfOptions): Promise<PdfPageIm
   const ossBase = `${ossRoot}note_v2/res/${userId}/${todayStr}/${customFileId}`
   const baseOss = `${ossBase}/${ossPageHash}`
 
-  for (let pageIndex = 0; pageIndex < pdfImages.length; pageIndex++) {
+  // ① 先按页码确定性地算好每一页的目录名与文件名
+  const pagePlans = pdfImages.map((img) => {
     const pageHash = generatePageHash()
     const pageBase = `/storage/emulated/0/Android/data/com.friday.cloudsnote/userNote/${userId}/note/${customFileId}/${pageHash}`
+    // 后缀按真实图片格式决定，避免对象键与实际内容不符
+    const imgName = `${pageHash}/${IMG_BASENAME}${imageExtOf(img.blob)}`
+    return { pageHash, pageBase, imgName, blob: img.blob }
+  })
 
-    await uploadFile(
-      pdfImages[pageIndex].blob,
-      userId,
-      'note_v2',
-      customFileId,
-      `${pageHash}/${IMG_FILENAME}`
-    )
+  // ② 并发上传（原实现串行），失败且疑似凭证过期时清缓存重试一次
+  let done = 0
+  await mapLimit(pagePlans, UPLOAD_CONCURRENCY, async (plan) => {
+    try {
+      await uploadFile(plan.blob, userId, 'note_v2', customFileId, plan.imgName)
+    } catch (e) {
+      invalidateStsCache(userId, 'note_v2')
+      await uploadFile(plan.blob, userId, 'note_v2', customFileId, plan.imgName)
+    }
+    done++
+    report(65 + (done / pagePlans.length) * 25, `已上传第 ${done}/${pagePlans.length} 页`)
+  })
 
-    // 8 条模板资源
+  // ③ 再按页码顺序构建 resourceList（顺序必须与页码一致，不能受并发完成顺序影响）
+  pagePlans.forEach((plan, pageIndex) => {
     for (const tpl of TEMPLATE_RESOURCES) {
       resourceList.push({
-        id: `${pageBase}/${tpl.rel}`,
+        id: `${plan.pageBase}/${tpl.rel}`,
         fileId: customFileId,
-        pageName: pageBase,
+        pageName: plan.pageBase,
         pageIndex,
         md5: tpl.md5,
         resourceType: tpl.resourceType,
@@ -288,24 +348,19 @@ export async function uploadPdfAsNote(opts: UploadPdfOptions): Promise<PdfPageIm
 
     // 图片资源：resourceType 为 pageIndex，md5 固定
     resourceList.push({
-      id: `${pageBase}/res/image/${IMG_FILENAME}`,
+      id: `${plan.pageBase}/res/image/${plan.imgName.split('/').pop()}`,
       fileId: customFileId,
-      pageName: pageBase,
+      pageName: plan.pageBase,
       pageIndex,
       md5: IMG_MD5,
       resourceType: pageIndex,
-      ossImageUrl: `${ossBase}/${pageHash}/${IMG_FILENAME}`,
+      ossImageUrl: `${ossBase}/${plan.imgName}`,
       createTimeStamp: timestamp,
       updateTimeStamp: timestamp,
       toBeUploaded: false,
       wasDeleted: false
     })
-
-    report(
-      65 + ((pageIndex + 1) / pdfImages.length) * 25,
-      `已上传第 ${pageIndex + 1}/${pdfImages.length} 页`
-    )
-  }
+  })
 
   // 步骤5、6：保存资源与笔记
   report(92, '正在保存资源...')

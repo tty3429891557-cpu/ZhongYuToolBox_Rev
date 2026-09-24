@@ -94,7 +94,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
+import { ref, reactive, onMounted, onBeforeUnmount, onActivated, onDeactivated, watch, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Upload, Picture, Loading, Delete, RefreshLeft } from '@element-plus/icons-vue'
@@ -114,10 +114,12 @@ interface SectionState {
   skip: number
   loadingMore: boolean
   finished: boolean
+  /** 加载是否失败过：失败后不再自动续加载，避免无限重试打爆服务端并刷屏报错 */
+  failed: boolean
 }
 const loading = reactive({ normal: false, recycle: false })
-const normal = reactive<SectionState>({ items: [], total: 0, skip: 0, loadingMore: false, finished: false })
-const recycle = reactive<SectionState>({ items: [], total: 0, skip: 0, loadingMore: false, finished: false })
+const normal = reactive<SectionState>({ items: [], total: 0, skip: 0, loadingMore: false, finished: false, failed: false })
+const recycle = reactive<SectionState>({ items: [], total: 0, skip: 0, loadingMore: false, finished: false, failed: false })
 
 function sectionOf(key: 'normal' | 'recycle'): SectionState {
   return key === 'normal' ? normal : recycle
@@ -130,7 +132,7 @@ function getScrollEl(): HTMLElement | null {
 function onScroll() {
   const key = activeTab.value
   const s = sectionOf(key)
-  if (s.loadingMore || s.finished) return
+  if (s.loadingMore || s.finished || s.failed) return
   const el = getScrollEl()
   if (!el) return
   const scrollTop = el.scrollTop
@@ -145,7 +147,7 @@ function onScroll() {
 function fillViewport() {
   const key = activeTab.value
   const s = sectionOf(key)
-  if (s.loadingMore || s.finished) return
+  if (s.loadingMore || s.finished || s.failed) return
   const el = getScrollEl()
   if (!el) return
   if (el.scrollHeight <= el.clientHeight + 120) {
@@ -243,6 +245,7 @@ async function loadMore(key: 'normal' | 'recycle') {
     s.skip += items.length
     if (s.items.length >= total) s.finished = true
   } catch (e: any) {
+    s.failed = true
     ElMessage.error('加载失败：' + (e.message || e))
   } finally {
     s.loadingMore = false
@@ -255,6 +258,7 @@ async function loadFirst(key: 'normal' | 'recycle') {
   s.items = []
   s.skip = 0
   s.finished = false
+  s.failed = false
   await loadMore(key)
   loading[key] = false
   await nextTick()
@@ -313,12 +317,33 @@ watch(activeTab, async (tab) => {
   }
 })
 
+/**
+ * 本页在路由上标记了 keepAlive，因此：
+ *  - onMounted 只在首次进入时执行一次；
+ *  - onBeforeUnmount **永远不会触发**（页面被缓存而非销毁）。
+ * 原实现把滚动监听放在 onMounted/onBeforeUnmount，导致离开图库后监听器仍挂在上，
+ * 用户滚动其它页面时会继续触发本页的 loadMore（多余请求甚至报错刷屏）。
+ * 改用 onActivated/onDeactivated 成对挂载与卸载。
+ */
+let initialised = false
+
 onMounted(async () => {
-  await loadFirst('normal')
-  await loadFirst('recycle')
+  if (!initialised) {
+    initialised = true
+    await loadFirst('normal')
+    await loadFirst('recycle')
+  }
   await nextTick()
   setupObserver()
   fillViewport()
+})
+
+onActivated(() => {
+  setupObserver()
+})
+
+onDeactivated(() => {
+  teardownObservers()
 })
 
 onBeforeUnmount(() => {

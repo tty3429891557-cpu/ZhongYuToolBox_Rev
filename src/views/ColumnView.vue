@@ -199,7 +199,7 @@
               >
                 <div class="col-msg-title">{{ m.title }}</div>
                 <div class="col-msg-meta">
-                  <span>{{ m.senderInfo.fullName }}</span>
+                  <span>{{ m.senderInfo?.fullName || '系统' }}</span>
                   <span class="col-dot">·</span>
                   <span>{{ m.creationTime }}</span>
                 </div>
@@ -281,14 +281,15 @@ function toggleTopic(id: number) {
 const filteredTopics = computed(() => {
   const kw = topicKeyword.value.trim().toLowerCase()
   if (!kw) return topics.value
+  // 服务端对没有专栏的学科会返回 cols: null / undefined，直接 .filter 会抛错导致整页白屏
   return topics.value
     .map((t) => ({
       ...t,
-      cols: t.cols.filter(
-        (c) => c.name.toLowerCase().includes(kw)
+      cols: (t.cols || []).filter(
+        (c) => (c?.name || '').toLowerCase().includes(kw)
       )
     }))
-    .filter((t) => t.cols.length > 0 || t.topicName.toLowerCase().includes(kw))
+    .filter((t) => t.cols.length > 0 || (t.topicName || '').toLowerCase().includes(kw))
 })
 
 // 文章列表 + 分页
@@ -311,8 +312,9 @@ async function loadPages(reset = true) {
       skipCount: (currentPage.value - 1) * pageSize,
       maxResultCount: pageSize
     })
-    pages.value = res.items
-    pagesTotalCount.value = res.totalCount
+    // 服务端异常时 result 可能为 null，直接取 .items 会抛错
+    pages.value = res?.items || []
+    pagesTotalCount.value = res?.totalCount || 0
   } catch (e: any) {
     ElMessage.error('加载文章失败：' + (e?.message || e))
   } finally {
@@ -341,7 +343,7 @@ async function selectCatalog(c: Catalog) {
   loadingFav.value = true
   try {
     const res = await getMyCatalogPages(c.id, { maxResultCount: 50 })
-    catalogPages.value = res.items
+    catalogPages.value = res?.items || []
   } catch (e: any) {
     ElMessage.error('加载收藏文章失败：' + (e?.message || e))
   } finally {
@@ -401,16 +403,16 @@ onMounted(async () => {
     topics.value = await getTopicSpecial()
     initExpanded()
     // 自动选中第一个专栏的第一个子项
-    if (topics.value.length > 0 && topics.value[0].cols.length > 0) {
-      const first = topics.value[0].cols[0]
-      selectColumn(first, topics.value[0].topicName)
+    const firstCols = topics.value[0]?.cols || []
+    if (topics.value.length > 0 && firstCols.length > 0) {
+      selectColumn(firstCols[0], topics.value[0].topicName)
     }
   } catch (e: any) {
     ElMessage.error('加载专栏列表失败：' + (e?.message || e))
   }
 
   try {
-    catalogs.value = await getSpecialCatalog()
+    catalogs.value = (await getSpecialCatalog()) || []
     if (catalogs.value.length > 0) selectCatalog(catalogs.value[0])
   } catch (e: any) {
     ElMessage.error('加载收藏夹失败：' + (e?.message || e))
@@ -418,7 +420,7 @@ onMounted(async () => {
 
   try {
     const res = await getMyMessageList(2, { maxResultCount: 50 })
-    messages.value = res.items
+    messages.value = res?.items || []
   } catch (e: any) {
     ElMessage.error('加载消息失败：' + (e?.message || e))
   }

@@ -10,8 +10,8 @@
       <div v-loading="loading" class="list-body">
         <el-empty v-if="!loading && exams.length === 0" description="暂无测评任务" />
         <div
-          v-for="e in exams"
-          :key="examKey(e)"
+          v-for="(e, i) in exams"
+          :key="examKey(e, i)"
           class="exam-row"
           :class="{ disabled: e.examState == 2 }"
           @click="openQuestions(e)"
@@ -52,8 +52,14 @@ const loading = ref(false)
 
 const totalPages = computed(() => Math.ceil(totalCount.value / PAGE_SIZE))
 
-function examKey(e: ExamTask): string {
-  return String(e.examTaskId || e.id || e.examId || e.testPagerId || Math.random())
+/**
+ * 列表 key。
+ * 修复：原实现在没有 id 时回退 `Math.random()` —— 每次渲染 key 都变，
+ * 整个列表 DOM 被销毁重建（丢失复用、可能闪烁、失去焦点）。
+ * 改为退到稳定的下标。
+ */
+function examKey(e: ExamTask, index: number): string {
+  return String(e.examTaskId || e.id || e.examId || e.testPagerId || `idx-${index}`)
 }
 
 async function load(pageNo: number) {
@@ -145,9 +151,11 @@ onMounted(() => load(1))
   justify-content: center;
 }
 
+/* 移动端：.content 的内边距只有 8px，负边距必须同步收成 -8px，
+   否则沿用 -20px 会让内容左右各溢出 12px */
 @media (max-width: 767px) {
   .exam-page {
-    margin: 0;
+    margin: 0 -8px;
     padding: 0 8px;
   }
 }

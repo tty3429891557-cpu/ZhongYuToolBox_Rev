@@ -344,9 +344,10 @@ onBeforeUnmount(() => getScrollEl()?.removeEventListener('scroll', onScroll))
   }
 }
 
+/* 移动端：.content 内边距只有 8px，负边距需同步收成 -8px，否则内容左右溢出 */
 @media (max-width: 767px) {
   .quora-page {
-    margin: 0;
+    margin: 0 -8px;
     padding: 0 8px;
   }
   .card-grid {

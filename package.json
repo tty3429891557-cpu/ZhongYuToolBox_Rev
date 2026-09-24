@@ -13,6 +13,7 @@
     "@vue-office/pptx": "^1.0.1",
     "ali-oss": "^6.21.0",
     "crypto-js": "^4.2.0",
+    "dompurify": "^3.4.13",
     "dplayer": "^1.27.1",
     "element-plus": "^2.7.6",
     "fabric": "^5.3.1",

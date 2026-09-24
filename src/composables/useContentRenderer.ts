@@ -6,7 +6,15 @@
  * 用法：在父组件用 v-html 注入内容后，调用 render(container) 进行改写。
  */
 
-import { proxyUrl, proxyImgSrc } from '@/utils/proxy'
+import { proxyImgSrc } from '@/utils/proxy'
+
+/**
+ * 附件 / 媒体地址处理。
+ * 修复：原先统一走 proxyUrl()，而远端下载代理（zytbdownloadagent.loshop.com.cn）
+ * 已随作者站点停运，导致章节里的 object / video / pdf 附件**全部打不开**。
+ * 改用 proxyImgSrc()：OSS 与中育自有 CDN 直连，只有确实需要中转的地址才回落代理。
+ */
+const proxyUrl = proxyImgSrc
 
 export interface AttachmentHandlers {
   /** object / video 在线查看（视频播放） */

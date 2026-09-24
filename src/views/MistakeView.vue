@@ -3,9 +3,9 @@
     <el-empty v-if="!booksLoading && books.length === 0" description="暂无错题本" />
 
     <el-tabs v-else v-model="activeBookId" class="mistake-tabs" @tab-change="onTabChange">
-      <el-tab-pane v-for="b in books" :key="b.id" :label="b.topic.content" :name="String(b.id)">
+      <el-tab-pane v-for="b in books" :key="b.id" :label="bookTitle(b)" :name="String(b.id)">
         <div v-loading="loading" class="mistake-list">
-          <el-empty v-if="!loading && list.length === 0" :description="`「${b.topic.content}」暂无错题`" />
+          <el-empty v-if="!loading && list.length === 0" :description="`「${bookTitle(b)}」暂无错题`" />
           <div
             v-for="(item, idx) in list"
             :key="item.id"
@@ -49,6 +49,15 @@ const activeBookId = ref<string>('')
 const loading = ref(false)
 const list = ref<MistakeItem[]>([])
 const bookCache = ref<Map<string, MistakeItem[]>>(new Map())
+
+/**
+ * 错题本名称。
+ * 修复：原模板直接写 `b.topic.content`，服务端对未绑定学科的错题本会返回 `topic: null`，
+ * 渲染时抛 `Cannot read properties of null (reading 'content')` → 整个错题本页面白屏。
+ */
+function bookTitle(b: MistakeBook): string {
+  return b?.topic?.content || '未命名错题本'
+}
 
 async function initBooks() {
   booksLoading.value = true

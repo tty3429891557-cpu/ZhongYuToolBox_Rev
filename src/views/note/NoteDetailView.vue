@@ -129,7 +129,8 @@ import { ArrowLeft, ArrowRight, Document, Download, PictureFilled, MoreFilled, D
 import JSZip from 'jszip'
 import { jsPDF } from 'jspdf'
 import { getNoteResources, getNoteResourcesForZip, moveNoteToRecycleBin, restoreNote, type NoteResource } from '@/api/note'
-import { proxyUrl, proxyImgSrc } from '@/utils/proxy'
+import { proxyImgSrc } from '@/utils/proxy'
+import { downloadBlob } from '@/utils/download'
 import { useIsMobile } from '@/composables/useIsMobile'
 
 const { isMobile } = useIsMobile()
@@ -230,8 +231,12 @@ function onActionCommand(cmd: string) {
 /** 资源地址转换（复刻 noteDownload 中 ossImageUrl 处理） */
 function toEntry(item: NoteResource): ResEntry {
   const full = item.ossImageUrl.startsWith('http') ? item.ossImageUrl : OSS_BASE + item.ossImageUrl
+  // 修复：`url`（导出 PDF / 打包下载时 fetch 的地址）原本走 proxyUrl()，
+  // 远端代理已下线 → 导出与打包全部失败。改为与预览一致的直连策略。
+  // 导出 PDF 需要 canvas 可读像素，跨域直连若不带 CORS 头会污染画布，
+  // 因此这里保留一个「直连优先、必要时回落代理」的策略由 proxyImgSrc 统一决定。
   return {
-    url: proxyUrl(full),
+    url: proxyImgSrc(full),
     imgSrc: proxyImgSrc(full),
     ext: item.ossImageUrl.split('.').pop() || ''
   }
@@ -270,14 +275,47 @@ async function loadResources() {
   }
 }
 
-/** 图片转 DataURL（复刻 loadImageAsDataURL） */
-async function loadImageAsDataURL(url: string): Promise<string> {
+/**
+ * 图片转 DataURL，并返回其真实 MIME（复刻 loadImageAsDataURL）
+ *
+ * 修复（原实现三处会导致「导出 PDF 时彻底卡死」）：
+ *  1. fetch 不检查 resp.ok：代理/源站返回 404/403 的 HTML 也会被当成图片；
+ *  2. FileReader 只挂 onloadend 不挂 onerror：失败时 Promise 永不 settle；
+ *  3. 调用方 await 的 `new Promise(r => imgObj.onload = r)` 完全没有 onerror 分支，
+ *     图片解码失败（非图片内容/损坏）时**永远挂起**，而进度弹窗 show-close=false、
+ *     close-on-click-modal=false，用户无法关闭 → 整页锁死。
+ */
+async function loadImageAsDataURL(url: string): Promise<{ dataUrl: string; mime: string }> {
   const res = await fetch(url)
+  if (!res.ok) throw new Error(`图片下载失败（HTTP ${res.status}）`)
   const blob = await res.blob()
-  return new Promise((resolve) => {
+  if (!blob || blob.size === 0) throw new Error('图片内容为空')
+  const mime = (blob.type || '').toLowerCase()
+  if (mime && !mime.startsWith('image/')) {
+    throw new Error(`返回的不是图片（Content-Type: ${mime}）`)
+  }
+  return new Promise((resolve, reject) => {
     const reader = new FileReader()
-    reader.onloadend = () => resolve(reader.result as string)
+    reader.onloadend = () => resolve({ dataUrl: reader.result as string, mime })
+    reader.onerror = () => reject(new Error('图片读取失败'))
     reader.readAsDataURL(blob)
+  })
+}
+
+/** 等待 <img> 解码完成；失败或超时一律 reject，避免永久挂起 */
+function decodeImage(img: HTMLImageElement, timeoutMs = 30000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      cleanup()
+      reject(new Error('图片解码超时'))
+    }, timeoutMs)
+    function cleanup() {
+      window.clearTimeout(timer)
+      img.onload = null
+      img.onerror = null
+    }
+    img.onload = () => { cleanup(); resolve() }
+    img.onerror = () => { cleanup(); reject(new Error('图片解码失败')) }
   })
 }
 
@@ -295,23 +333,29 @@ async function exportPdf() {
       const pageData = pageMap.value[pages.value[i]]
       if (!pageData?.thumbnail) continue
 
-      const img = await loadImageAsDataURL(pageData.thumbnail.url)
+      const { dataUrl: img, mime } = await loadImageAsDataURL(pageData.thumbnail.url)
       const imgObj = new Image()
       imgObj.src = img
-      await new Promise((r) => {
-        imgObj.onload = r
-      })
+      await decodeImage(imgObj)
+
+      const natW = imgObj.naturalWidth || imgObj.width
+      const natH = imgObj.naturalHeight || imgObj.height
+      // 宽高为 0 时 ratio 会变成 Infinity/NaN，jsPDF 会画出不可见内容
+      if (!natW || !natH) throw new Error(`第 ${i + 1} 页图片尺寸无效（${natW}x${natH}）`)
 
       const pageWidth = pdf.internal.pageSize.getWidth()
       const pageHeight = pdf.internal.pageSize.getHeight()
-      const ratio = Math.min(pageWidth / imgObj.width, pageHeight / imgObj.height)
-      const imgWidth = imgObj.width * ratio
-      const imgHeight = imgObj.height * ratio
+      const ratio = Math.min(pageWidth / natW, pageHeight / natH)
+      const imgWidth = natW * ratio
+      const imgHeight = natH * ratio
       const x = (pageWidth - imgWidth) / 2
       const y = (pageHeight - imgHeight) / 2
 
+      // 按真实 MIME 选择格式：png 数据硬写成 JPEG 会让部分阅读器无法渲染
+      const format = mime.includes('png') ? 'PNG' : 'JPEG'
+
       if (added > 0) pdf.addPage()
-      pdf.addImage(img, 'JPEG', x, y, imgWidth, imgHeight)
+      pdf.addImage(img, format, x, y, imgWidth, imgHeight)
       added++
 
       pdf.setFontSize(8)
@@ -333,6 +377,10 @@ async function exportPdf() {
 
 /** 打包下载 zip（复刻 noteDownload2） */
 async function downloadZip() {
+  if (!fileId.value) {
+    ElMessage.warning('笔记 ID 为空，无法下载')
+    return
+  }
   downloading.value = true
   progressVisible.value = true
   progressText.value = '正在获取笔记图片...'
@@ -344,12 +392,19 @@ async function downloadZip() {
 
     for (let i = 0; i < list.length; i++) {
       const item = list[i]
-      const url = proxyUrl(
+      const url = proxyImgSrc(
         item.ossImageUrl.startsWith('http') ? item.ossImageUrl : OSS_BASE + item.ossImageUrl
       )
       progressPercent.value = Math.round(((i + 1) / list.length) * 100)
-      if (/\.(jpg|jpeg|png|webp)$/.test(url)) {
-        const image = await fetch(url).then((r) => r.blob())
+      if (/\.(jpg|jpeg|png|webp)$/i.test(url)) {
+        // 原实现不检查 resp.ok：代理失效时会把「错误页 HTML」存成 .jpg，解压后全是坏图
+        const resp = await fetch(url)
+        if (!resp.ok) {
+          console.warn('跳过下载失败的图片', url, resp.status)
+          continue
+        }
+        const image = await resp.blob()
+        if (!image.size) continue
         if (!count[item.pageIndex]) count[item.pageIndex] = 1
         const suffix = item.resourceType === 2 ? 'thumbnail' : count[item.pageIndex]++
         zip.file(`${item.pageIndex + 1}-${suffix}.jpg`, image)
@@ -358,12 +413,7 @@ async function downloadZip() {
 
     progressText.value = '正在打包...'
     const content = await zip.generateAsync({ type: 'blob' })
-    const a = document.createElement('a')
-    a.href = URL.createObjectURL(content)
-    a.download = fileName.value + '.zip'
-    a.target = '_blank'
-    a.click()
-    URL.revokeObjectURL(a.href)
+    downloadBlob(content, (fileName.value || 'note') + '.zip')
     ElMessage.success('下载已启动')
   } catch (e: any) {
     ElMessage.error(e.message || '下载失败')

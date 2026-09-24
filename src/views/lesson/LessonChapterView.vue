@@ -51,6 +51,8 @@ import { ElMessage } from 'element-plus'
 import type { LessonCourse } from '@/api/lesson'
 import { readContent, getLearningCourses } from '@/api/lesson'
 import { renderLessonContent, hasRawAttachments, type AttachmentHandlers } from '@/composables/useContentRenderer'
+import { safeLessonHtml } from '@/utils/sanitize'
+import { downloadBlob } from '@/utils/download'
 import { useShareStore, type ShareTarget } from '@/stores/share'
 import { useIsMobile } from '@/composables/useIsMobile'
 
@@ -92,7 +94,10 @@ async function loadContent() {
   loading.value = true
   try {
     const html = await readContent(catalogId.value, courseId.value)
-    contentHtml.value = html
+    // 章节正文是服务端富文本且会走 v-html，必须先净化。
+    // 用 safeLessonHtml（放行 <object>/<embed>）——优客畅学的附件正是用 <object data> 承载的，
+    // 用普通 safeHtml 会把附件标签剥掉，导致附件全部消失。
+    contentHtml.value = safeLessonHtml(html)
     rawContentJson.value = JSON.stringify(html)
     await nextTick()
     if (showRef.value) renderLessonContent(showRef.value, handlers)
@@ -121,12 +126,8 @@ function downloadSource() {
     return
   }
   const blob = new Blob([rawContentJson.value], { type: 'text/plain;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = (courseTitle.value || 'lesson') + '_' + catalogId.value + '.rcf'
-  a.click()
-  URL.revokeObjectURL(url)
+  // 改用统一工具：原写法未挂 DOM 且立即 revoke，在 Firefox 上不会触发下载
+  downloadBlob(blob, (courseTitle.value || 'lesson') + '_' + catalogId.value + '.rcf')
 }
 
 function openShare() {

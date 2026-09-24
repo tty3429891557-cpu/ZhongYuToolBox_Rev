@@ -22,7 +22,7 @@
       </div>
     </header>
 
-    <el-container class="main-container" :class="{ 'is-mobile': isMobile }">
+    <el-container class="main-container" :class="{ 'is-mobile': isMobile, 'no-topbar': hideHeader }">
       <!-- 侧边栏（桌面端常驻） -->
       <el-aside v-if="!isMobile" :width="collapsed ? '64px' : '220px'" class="aside">
         <div class="brand">
@@ -51,7 +51,8 @@
         <el-main class="content" :class="{ flush: hideHeader }" ref="mainRef">
           <router-view v-slot="{ Component, route }">
             <transition name="fade" mode="out-in">
-              <keep-alive v-if="route.meta.keepAlive">
+              <!-- max 限制缓存实例数：原实现无上限，长时间使用内存单调增长 -->
+              <keep-alive v-if="route.meta.keepAlive" :max="6">
                 <component :is="Component" />
               </keep-alive>
               <component :is="Component" v-else />
@@ -125,13 +126,22 @@ const proxyLocal = computed(() => proxy.localEnabled)
 const mainRef = ref()
 const showBackTop = ref(false)
 
+/**
+ * 修复：原实现用 `document.querySelector('.content')` 全局查找滚动容器。
+ * 一旦其它组件（如在线专栏）也有同名 class，就会取到错误的元素，
+ * 监听/滚动都作用到错误节点上。改用模板里 ref 绑定的真实 el-main 节点。
+ */
+function scrollEl(): HTMLElement | null {
+  const el = mainRef.value as any
+  return (el?.$el ?? el) as HTMLElement | null
+}
 function onScroll() {
-  const el = document.querySelector('.content')
+  const el = scrollEl()
   const top = el ? el.scrollTop : window.scrollY
   showBackTop.value = top > 300
 }
 function scrollToTop() {
-  const el = document.querySelector('.content')
+  const el = scrollEl()
   if (el) el.scrollTo({ top: 0, behavior: 'smooth' })
   else window.scrollTo({ top: 0, behavior: 'smooth' })
 }
@@ -158,15 +168,13 @@ function onProxyStatusChange(localOk: boolean, isWindows: boolean) {
 
 onMounted(() => {
   startProxyPolling(onProxyStatusChange)
-  const content = document.querySelector('.content')
-  content?.addEventListener('scroll', onScroll)
+  scrollEl()?.addEventListener('scroll', onScroll, { passive: true })
   // 让接管顶栏的二级页面（如在线专栏）也能唤起移动端侧栏抽屉
   window.addEventListener('app:open-drawer', onOpenDrawer)
 })
 onUnmounted(() => {
   stopProxyPolling()
-  const content = document.querySelector('.content')
-  content?.removeEventListener('scroll', onScroll)
+  scrollEl()?.removeEventListener('scroll', onScroll)
   window.removeEventListener('app:open-drawer', onOpenDrawer)
 })
 
@@ -177,7 +185,10 @@ function onOpenDrawer() {
 
 <style scoped>
 .layout-root {
+  /* 移动端浏览器地址栏会让 100vh 大于可视高度，导致底部内容被顶出屏幕；
+     支持 dvh 的浏览器用 dvh，不支持的退回 vh */
   height: 100vh;
+  height: 100dvh;
   overflow: hidden;
   position: relative;
 }
@@ -316,9 +327,13 @@ function onOpenDrawer() {
   align-items: center;
   gap: 4px;
 }
-/* 移动端主容器占满高度 */
+/* 移动端主容器占满高度（减去顶栏 50px） */
 .main-container.is-mobile {
   height: calc(100% - 50px);
+}
+/* 二级页面（在线专栏等自带顶栏）时不该再减 50px，否则底部会被裁掉一块 */
+.main-container.is-mobile.no-topbar {
+  height: 100%;
 }
 /* 移动端抽屉宽度：按比例并限制最大宽度，避免在大屏手机上过宽 */
 .mobile-drawer.el-drawer {

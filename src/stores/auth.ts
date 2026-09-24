@@ -4,6 +4,7 @@
 import { defineStore } from 'pinia'
 import { loginApi, getUserInfo, refreshTokenApi, discoverSchool, buildApiBaseCandidates, type LoginResult } from '@/api/auth'
 import { PRESET_API_BASE, PRESET_WEB_BASE, DEFAULT_API_BASE, nativeWebBase } from '@/config'
+import { saveObfuscatedPassword, loadObfuscatedPassword, clearObfuscatedPassword } from '@/utils/secretStore'
 
 /** 从 API 地址推导对应的学校原生 web 地址（承载 navPage.html） */
 function webBaseFor(apiBase: string, schoolSelect: string, schoolCode: string): string {
@@ -14,10 +15,20 @@ function webBaseFor(apiBase: string, schoolSelect: string, schoolCode: string): 
   return PRESET_WEB_BASE.sxz
 }
 
+/**
+ * 解析 JWT payload。
+ * 修复：JWT 第二段是 **base64url**（可能含 `-` / `_`，且省略 `=` 填充），
+ * 原实现直接 `atob()`，遇到这两种字符会抛 InvalidCharacterError，
+ * 被 catch 后返回 null → isTokenExpired 一律返回 true →
+ * 明明 token 还有效却被判定过期，用户被反复踢回登录页。
+ */
 function parseJwt(token: string): any {
   try {
-    const payload = atob(token.split('.')[1])
-    return JSON.parse(payload)
+    const seg = (token || '').split('.')[1]
+    if (!seg) return null
+    const b64 = seg.replace(/-/g, '+').replace(/_/g, '/')
+    const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4)
+    return JSON.parse(atob(padded))
   } catch {
     return null
   }
@@ -77,7 +88,19 @@ export const useAuthStore = defineStore('auth', {
       localStorage.setItem('apiBaseUrl', apiBaseUrl)
       localStorage.setItem('apiBaseOrigin', apiBaseUrl)
     },
-    async login(account: string, password: string, schoolSelect: string, schoolCode: string) {
+    /**
+     * 登录。
+     * @param rememberPassword 是否在本机保留密码用于 401 后自动重登。
+     *   默认 false —— 原实现无条件把**明文**密码写进 localStorage，
+     *   而本工程此前有多个 v-html 注入点，等于把账号密码直接暴露给任何 XSS。
+     */
+    async login(
+      account: string,
+      password: string,
+      schoolSelect: string,
+      schoolCode: string,
+      rememberPassword = false
+    ) {
       let apiBaseUrl = this.apiBaseUrl || DEFAULT_API_BASE
       let preResult: LoginResult | null = null
 
@@ -127,25 +150,48 @@ export const useAuthStore = defineStore('auth', {
         throw new Error(`获取账号信息失败：${msg}`)
       }
       this.setUserInfo(userInfo, apiBaseUrl)
+      /**
+       * 修复：预置学校时 schoolCode 必须以「所选学校」为准。
+       * 服务端 GetInfoAsync 返回的用户信息里通常没有 schoolCode 字段，
+       * 原实现 `this.schoolCode = info.schoolCode || this.schoolCode` 会沿用
+       * localStorage 里的旧值（默认 'sxz'）—— 实测 sxzsyxx 账号登录后
+       * schoolCode 被存成了 'sxz'。而 resolveIframeBase 的兜底分支正是用
+       * schoolCode 推导 web 地址，会导致专栏兜底地址指向错误学校。
+       */
+      if (schoolSelect !== 'other') {
+        this.schoolCode = schoolSelect
+        localStorage.setItem('schoolCode', schoolSelect)
+      } else if (userInfo.schoolCode) {
+        this.schoolCode = userInfo.schoolCode
+        localStorage.setItem('schoolCode', userInfo.schoolCode)
+      }
       // 同步「嵌套 iframe 基地址」为该校原生 web 地址（专栏 navPage.html 用），
       // 不再依赖作者服务器 zyapi.loshop.com.cn
       localStorage.setItem('iframeBase', webBaseFor(apiBaseUrl, schoolSelect, schoolCode))
-      // 记录凭据，供 401 后自动重新登录（需求：登录时记录用户名密码学校）
+      // 记录凭据，供 401 后自动重新登录。
+      // 账号/学校可以直接存（无敏感），密码只在用户勾选「记住密码」时以混淆形式保存。
       localStorage.setItem('loginAccount', account)
-      localStorage.setItem('loginPassword', password)
       localStorage.setItem('loginSchoolSelect', schoolSelect)
       localStorage.setItem('loginSchoolCode', schoolCode)
+      if (rememberPassword) {
+        saveObfuscatedPassword(password)
+      } else {
+        clearObfuscatedPassword()
+      }
       this.startRefresh()
       return userInfo
     },
-    /** 用记录的凭据自动重新登录（401 刷新失败后的兜底） */
+    /**
+     * 用记录的凭据自动重新登录（401 刷新失败后的兜底）。
+     * 没有保存密码时直接抛错，由 request.ts 统一登出并跳回登录页。
+     */
     async autoRelogin() {
       const account = localStorage.getItem('loginAccount')
-      const password = localStorage.getItem('loginPassword')
+      const password = loadObfuscatedPassword()
       const schoolSelect = localStorage.getItem('loginSchoolSelect') || 'sxz'
       const schoolCode = localStorage.getItem('loginSchoolCode') || ''
-      if (!account || !password) throw new Error('无可用登录凭据')
-      await this.login(account, password, schoolSelect, schoolCode)
+      if (!account || !password) throw new Error('未保存登录密码，无法自动重新登录')
+      await this.login(account, password, schoolSelect, schoolCode, true)
     },
     async doRefresh(): Promise<boolean> {
       if (!this.token || !this.refreshToken) return false
@@ -196,9 +242,11 @@ export const useAuthStore = defineStore('auth', {
       localStorage.removeItem('schoolCode')
       // 清除自动重登凭据
       localStorage.removeItem('loginAccount')
-      localStorage.removeItem('loginPassword')
       localStorage.removeItem('loginSchoolSelect')
       localStorage.removeItem('loginSchoolCode')
+      // 注销即彻底清除本机保留的密码（兼容清理旧版本留下的明文项）
+      clearObfuscatedPassword()
+      localStorage.removeItem('loginPassword')
       this.stopRefresh()
     }
   }

@@ -104,17 +104,34 @@ function saveState() {
   if (undoStack.length > MAX_HISTORY) undoStack.shift()
   redoStack = []
 }
+function applySnapshot(json: string) {
+  if (!fc) return
+  try {
+    fc.loadFromJSON(json, () => fc!.renderAll())
+  } catch (e) {
+    console.warn('[BoardView] 还原画布失败', e)
+    ElMessage.error('还原失败，画布状态可能已损坏')
+  }
+}
+
+/**
+ * 撤销。
+ * 修复：原实现把当前状态直接 `undoStack.pop()` 丢弃，从不写入 redoStack，
+ * 而 redoStack 又只在 saveState 里被清空 —— 导致「重做」按钮**永远不可用**。
+ */
 function undo() {
   if (!fc || undoStack.length < 2) return
-  undoStack.pop()
-  const prev = undoStack[undoStack.length - 1]
-  fc.loadFromJSON(prev, () => fc!.renderAll())
+  const current = undoStack.pop()!
+  redoStack.push(current)
+  if (redoStack.length > MAX_HISTORY) redoStack.shift()
+  applySnapshot(undoStack[undoStack.length - 1])
 }
 function redo() {
   if (!fc || redoStack.length === 0) return
   const next = redoStack.pop()!
   undoStack.push(next)
-  fc.loadFromJSON(next, () => fc!.renderAll())
+  if (undoStack.length > MAX_HISTORY) undoStack.shift()
+  applySnapshot(next)
 }
 function clearAll() {
   if (!fc) return
@@ -181,18 +198,31 @@ function pickImage() {
 }
 function insertImage(dataUrl: string) {
   if (!fc) return
-  fabric.Image.fromURL(dataUrl, (img) => {
-    const maxW = CANVAS_W * 0.8
-    const maxH = CANVAS_H * 0.8
-    if (img.width! > maxW || img.height! > maxH) {
-      const ratio = Math.min(maxW / img.width!, maxH / img.height!)
-      img.scale(ratio)
-    }
-    img.set({ left: CANVAS_W / 2 - (img.width! * img.scaleX!) / 2, top: CANVAS_H / 2 - (img.height! * img.scaleY!) / 2 })
-    fc!.add(img)
-    fc!.setActiveObject(img)
-    saveState()
-  })
+  // 原实现只给了成功回调：URL 无效/解码失败时 errImg 为 undefined，
+  // `img.width!` 直接抛 TypeError（画布页静默失效）
+  fabric.Image.fromURL(
+    dataUrl,
+    (img) => {
+      if (!img || !img.width || !img.height) {
+        ElMessage.warning('图片解析失败，无法插入')
+        return
+      }
+      const maxW = CANVAS_W * 0.8
+      const maxH = CANVAS_H * 0.8
+      if (img.width > maxW || img.height > maxH) {
+        const ratio = Math.min(maxW / img.width, maxH / img.height)
+        img.scale(ratio)
+      }
+      img.set({
+        left: CANVAS_W / 2 - (img.width * (img.scaleX ?? 1)) / 2,
+        top: CANVAS_H / 2 - (img.height * (img.scaleY ?? 1)) / 2
+      })
+      fc!.add(img)
+      fc!.setActiveObject(img)
+      saveState()
+    },
+    { crossOrigin: 'anonymous' }
+  )
 }
 function onImgChange(e: Event) {
   const file = (e.target as HTMLInputElement).files?.[0]

@@ -8,10 +8,11 @@
       <div v-if="!auth.isLoggedIn">
         <el-form label-position="top" autocomplete="on" @submit.prevent="onLogin">
           <el-form-item label="学校">
+            <!-- 选项来自 config 的 SCHOOLS（单一数据源）。
+                 已收录的学校（省锡中 / 省锡中双语学校 / 北京市第八十中学）直接选即可，
+                 只有列表里没有的学校才需要选「其它学校」手填代码。 -->
             <el-select v-model="schoolSelect" @change="onSchoolChange" style="width: 100%">
-              <el-option label="省锡中" value="sxz" />
-              <el-option label="省锡中双语学校" value="sxzsyxx" />
-              <el-option label="其它学校" value="other" />
+              <el-option v-for="s in SCHOOLS" :key="s.value" :label="s.label" :value="s.value" />
             </el-select>
             <div class="school-hint">
               学校须与账号所属学校一致：两校后端不同、数据不互通，选错学校即使能登录也取不到数据。
@@ -28,6 +29,16 @@
 
           <el-form-item label="密码">
             <el-input v-model="password" name="password" autocomplete="current-password" type="password" placeholder="输入密码" show-password @keyup.enter="onLogin" />
+          </el-form-item>
+
+          <el-form-item>
+            <el-checkbox v-model="rememberPassword">
+              记住密码（用于登录过期后自动重新登录）
+            </el-checkbox>
+            <div class="school-hint">
+              默认不保存。勾选后密码会以混淆形式仅保存在本机浏览器，注销即清除；
+              共用电脑或使用公共设备时请不要勾选。
+            </div>
           </el-form-item>
 
           <el-button
@@ -69,6 +80,8 @@ import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
+import { loadObfuscatedPassword } from '@/utils/secretStore'
+import { SCHOOLS } from '@/config'
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -77,16 +90,41 @@ const schoolSelect = ref('sxz')
 const schoolCode = ref('')
 const account = ref('')
 const password = ref('')
+const rememberPassword = ref(false)
 const loading = ref(false)
 
 function onSchoolChange() {
   if (schoolSelect.value !== 'other') schoolCode.value = ''
 }
 
+/**
+ * 回填上次成功登录的账号与学校，方便重新登录。
+ * 注意：密码**不回填到输入框**（只在真正需要自动重登时由 auth.autoRelogin 内部读取），
+ * 避免打开登录页就把密码显示在 DOM/内存里。
+ */
+function restoreLastLogin() {
+  const savedAccount = localStorage.getItem('loginAccount')
+  if (savedAccount) account.value = savedAccount
+  const savedSelect = localStorage.getItem('loginSchoolSelect')
+  if (savedSelect && SCHOOLS.some((s) => s.value === savedSelect)) {
+    schoolSelect.value = savedSelect
+  }
+  if (schoolSelect.value === 'other') {
+    schoolCode.value = localStorage.getItem('loginSchoolCode') || ''
+  }
+  rememberPassword.value = !!loadObfuscatedPassword()
+}
+
 async function onLogin() {
   loading.value = true
   try {
-    const info = await auth.login(account.value, password.value, schoolSelect.value, schoolCode.value)
+    const info = await auth.login(
+      account.value,
+      password.value,
+      schoolSelect.value,
+      schoolCode.value,
+      rememberPassword.value
+    )
     if (account.value[0] !== '2') {
       ElMessage.warning('你的账号为非学生账号，功能受限(没适配)，仅可查看随身答和下载应用')
     }
@@ -106,6 +144,7 @@ function onLogout() {
 
 onMounted(() => {
   if (auth.isLoggedIn) auth.startRefresh()
+  else restoreLastLogin()
 })
 </script>
 

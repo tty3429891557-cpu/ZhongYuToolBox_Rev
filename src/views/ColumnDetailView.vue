@@ -11,7 +11,7 @@
       v-loading="loadingDetail"
       class="detail-body"
       @click.capture="onBodyClick"
-      v-html="detail ? proxyContentImages(processPdfs(processVideos(detail.content))) : ''"
+      v-html="renderedContent"
     ></div>
 
     <!-- 底部栏：更新时间 + 互动数据 -->
@@ -39,12 +39,14 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowLeft, ChatDotRound, Pointer, Star } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { getPageDetail, hitPage } from '@/api/column'
 import type { ColumnPageDetail } from '@/api/column'
 import { proxyImgSrc } from '@/utils/proxy'
+import { safeHtml, escapeHtml } from '@/utils/sanitize'
 
 const route = useRoute()
 const router = useRouter()
@@ -53,6 +55,17 @@ const pageId = computed(() => route.params.pageId as string)
 
 const loadingDetail = ref(true)
 const detail = ref<ColumnPageDetail | null>(null)
+
+/**
+ * 渲染流程：字符串预处理（图片代理 → 视频卡片 → PDF 卡片）→ 净化 → v-html。
+ * 顺序很关键：必须在所有字符串拼接**之后**再净化，
+ * 否则 processPdfs 拼进去的文件名会成为绕过净化的注入通道。
+ */
+const renderedContent = computed(() => {
+  const raw = detail.value?.content
+  if (!raw) return ''
+  return safeHtml(proxyContentImages(processPdfs(processVideos(raw))))
+})
 
 /* 加载详情 + 调用已读 API */
 async function loadDetail() {
@@ -98,7 +111,7 @@ function processVideos(html: string): string {
   return html.replace(
     /<video\b[^>]*?\ssrc=["']([^"']+)["'][^>]*?>\s*<\/video>/gi,
     (_m, src: string) =>
-      `<div class="col-file-card" data-file-url="${src}" data-file-kind="video">` +
+      `<div class="col-file-card" data-file-url="${escapeHtml(src)}" data-file-kind="video">` +
       `<span class="col-file-icon video"></span>` +
       `<span class="col-file-name">播放视频</span>` +
       `<span class="col-file-action">播放</span></div>`
@@ -123,10 +136,13 @@ function processPdfs(html: string): string {
         const decoded = decodeURIComponent(dataUrl.split('?')[0].split('/').pop() || '')
         name = decoded || 'PDF 文件'
       }
+      // 修复：name / dataUrl 都来自被解析的 HTML，直接拼进属性会造成二次注入
+      // （例如 name = `"><img src=x onerror=alert(1)>` 就能闭合属性与标签）。
+      // 必须转义；外层渲染时还会再做一次 DOMPurify 净化，双重保险。
       return (
-        `<div class="col-file-card" data-file-url="${dataUrl}" data-file-kind="pdf">` +
+        `<div class="col-file-card" data-file-url="${escapeHtml(dataUrl)}" data-file-kind="pdf">` +
         `<span class="col-file-icon pdf"></span>` +
-        `<span class="col-file-name">${name}</span>` +
+        `<span class="col-file-name">${escapeHtml(name)}</span>` +
         `<span class="col-file-action">查看</span></div>`
       )
     }

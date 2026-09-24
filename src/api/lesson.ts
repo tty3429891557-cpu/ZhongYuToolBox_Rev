@@ -27,21 +27,33 @@ export interface LessonCatalog {
   [key: string]: any
 }
 
-/** 分页拉取全部在学课程（复刻 show_lesson 的 while 分页） */
+/**
+ * 分页拉取全部在学课程（复刻 show_lesson 的 while 分页）
+ *
+ * 修复：原实现是 `while(true)`，仅以「返回空数组」作为终止条件。
+ * 一旦服务端忽略 page 参数（始终返回第一页）、或分页字段改名导致 list 恒非空，
+ * 就会变成**无限请求循环**，页面彻底卡死（打开章节页必现，因为每进一次章节都调它）。
+ * 现加三重保险：最大页数、首条 id 去重、空列表终止。
+ */
+const MAX_COURSE_PAGES = 50
+
 export async function getLearningCourses(): Promise<LessonCourse[]> {
   const all: LessonCourse[] = []
+  const seenFirstIds = new Set<string>()
   let page = 1
-  while (true) {
+  while (page <= MAX_COURSE_PAGES) {
     const res = await request<{ data: LessonCourse[] }>(
       `/SelfStudy/api/Learn/LearningCourses?page=${page}`
     )
     const list = res.data || []
-    if (list.length > 0) {
-      all.push(...list)
-      page++
-    } else {
-      break
-    }
+    if (list.length === 0) break
+
+    const firstKey = String((list[0] as any)?.id ?? '')
+    if (firstKey && seenFirstIds.has(firstKey)) break // 服务端反复返回同一页
+    if (firstKey) seenFirstIds.add(firstKey)
+
+    all.push(...list)
+    page++
   }
   return all
 }

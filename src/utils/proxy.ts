@@ -51,28 +51,50 @@ function isWin(): boolean {
   return navigator.userAgent.indexOf('Windows') !== -1
 }
 
+/**
+ * 探测本地加速插件。
+ * 修复：原实现没有超时。若 5005 端口被防火墙「静默丢包」（不返回 RST），
+ * fetch 会一直挂着；而 startProxyPolling 每 15s 触发一次 tick，
+ * 挂起的请求会不断堆积（连接数与内存持续增长），长时间运行后明显变卡。
+ */
 async function pingLocalProxy(): Promise<boolean> {
+  const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null
+  const timer = ctl ? window.setTimeout(() => ctl.abort(), 2500) : 0
   try {
-    const resp = await fetch(PROXY_LOCAL_PING, { method: 'GET', mode: 'cors' })
+    const resp = await fetch(PROXY_LOCAL_PING, {
+      method: 'GET',
+      mode: 'cors',
+      signal: ctl ? ctl.signal : undefined
+    })
     return resp.ok
   } catch {
     return false
+  } finally {
+    if (timer) window.clearTimeout(timer)
   }
 }
 
 /** 全局轮询探测本地加速插件（供 AppLayout 在启动时调用） */
 export function startProxyPolling(onChange: ProxyChangeCb): void {
   stopProxyPolling()
+  let inFlight = false
   const tick = async () => {
-    const localOk = await pingLocalProxy()
-    proxyBaseUrl = localOk ? PROXY_LOCAL : PROXY_REMOTE
-    if (lastLocalOk !== localOk) {
-      lastLocalOk = localOk
-      onChange(localOk, isWin())
+    // 上一次探测还没返回就跳过本轮，避免慢/丢包环境下并发堆积
+    if (inFlight) return
+    inFlight = true
+    try {
+      const localOk = await pingLocalProxy()
+      proxyBaseUrl = localOk ? PROXY_LOCAL : PROXY_REMOTE
+      if (lastLocalOk !== localOk) {
+        lastLocalOk = localOk
+        onChange(localOk, isWin())
+      }
+    } finally {
+      inFlight = false
     }
   }
-  tick()
-  pollingTimer = window.setInterval(tick, 15000)
+  void tick()
+  pollingTimer = window.setInterval(() => void tick(), 15000)
 }
 
 export function stopProxyPolling(): void {

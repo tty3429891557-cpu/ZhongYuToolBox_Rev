@@ -86,6 +86,7 @@ import { Document, Upload, UploadFilled, Download } from '@element-plus/icons-vu
 import type { UploadFile } from 'element-plus'
 import { uploadPdfAsNote } from '@/api/pdfNote'
 import { zipBlobs, type PdfPageImage } from '@/utils/pdf'
+import { downloadBlob } from '@/utils/download'
 
 const noteName = ref('')
 const currentFile = ref<File | null>(null)
@@ -98,9 +99,9 @@ const previewUrls = ref<string[]>([])
 
 /** 格式化文件大小（复刻 formatFileSize） */
 function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return bytes + ' B'
-  if (bytes < 1048576) return (bytes / 1024).toFixed(2) + ' KB'
-  return (bytes / 1048576).toFixed(2) + ' MB'
+  if (bytes < 1024) return bytes.toFixed(3) + 'B'
+  if (bytes < 1048576) return (bytes / 1024).toFixed(3) + 'KB'
+  return (bytes / 1048576).toFixed(3) + 'MB'
 }
 
 function handleFileChange(file: UploadFile) {
@@ -179,11 +180,8 @@ async function downloadZip() {
     blob: img.blob
   }))
   const blob = await zipBlobs(files)
-  const a = document.createElement('a')
-  a.href = URL.createObjectURL(blob)
-  a.download = (noteName.value.trim() || 'pdf_note') + '.zip'
-  a.click()
-  URL.revokeObjectURL(a.href)
+  // 改用统一工具：原写法未挂 DOM 且立即 revoke，在 Firefox 上不会触发下载
+  downloadBlob(blob, (noteName.value.trim() || 'pdf_note') + '.zip')
 }
 
 onBeforeUnmount(() => {

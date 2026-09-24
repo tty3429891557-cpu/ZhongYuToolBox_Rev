@@ -85,12 +85,82 @@ function syncFromStorage() {
   proxyIsLocal.value = proxyBase.value === PROXY_LOCAL
 }
 
+/**
+ * 校验接口地址。
+ *
+ * 修复：原实现把用户输入的任意字符串直接写进 localStorage。
+ * 下一次登录会向该地址 POST 用户名+密码，并把后续所有 Bearer token 发给它 ——
+ * 一次误填（或被引导填入恶意地址）等于完整交出账号。
+ * 这里做协议、格式与主机名的强制校验，非 http(s) 或非法 URL 一律拒绝保存。
+ */
+function validateBaseUrl(raw: string, label: string): string | null {
+  const v = raw.trim()
+  if (!v) return null // 留空表示「用默认值」，允许
+  if (!/^https?:\/\//i.test(v)) {
+    return `${label} 必须以 http:// 或 https:// 开头`
+  }
+  let u: URL
+  try {
+    u = new URL(v)
+  } catch {
+    return `${label} 不是合法的 URL`
+  }
+  if (!u.hostname || !/^[a-z0-9.\-_:\[\]]+$/i.test(u.hostname)) {
+    return `${label} 的主机名不合法`
+  }
+  if (/\s/.test(v)) return `${label} 不能包含空格`
+  return null
+}
+
 function save() {
+  const apiErr = validateBaseUrl(apiBaseUrl.value, 'API 基地址')
+  if (apiErr) {
+    ElMessage.error(apiErr)
+    return
+  }
+  const shareErr = validateBaseUrl(shareServer.value, '分享服务地址')
+  if (shareErr) {
+    ElMessage.error(shareErr)
+    return
+  }
+  const iframeErr = validateBaseUrl(iframeBase.value, 'iframe 基地址')
+  if (iframeErr) {
+    ElMessage.error(iframeErr)
+    return
+  }
+
+  // 指向非学校域名时做一次明确提醒（不阻断，但让用户知道风险）
+  const host = (() => {
+    try {
+      return new URL(apiBaseUrl.value.trim()).hostname.toLowerCase()
+    } catch {
+      return ''
+    }
+  })()
+  const risky = host && !/(zykj\.org|loshop\.com\.cn)$/.test(host)
+  if (risky) {
+    ElMessageBox.confirm(
+      `你填写的 API 基地址指向「${host}」，不是已知的中育学校域名。\n` +
+        `登录时账号密码与该地址返回的 token 都会发送到这里，请确认可信后再继续。`,
+      '地址风险确认',
+      { type: 'warning', confirmButtonText: '确认保存', cancelButtonText: '取消' }
+    )
+      .then(() => commitSave())
+      .catch(() => {
+        /* 用户取消 */
+      })
+    return
+  }
+  commitSave()
+}
+
+function commitSave() {
   saving.value = true
   try {
     localStorage.setItem('apiBaseUrl', apiBaseUrl.value.trim())
     localStorage.setItem('shareServer', shareServer.value.trim())
     localStorage.setItem('iframeBase', iframeBase.value.trim())
+    syncFromStorage()
     ElMessage.success('配置已保存，刷新页面后生效')
   } finally {
     saving.value = false

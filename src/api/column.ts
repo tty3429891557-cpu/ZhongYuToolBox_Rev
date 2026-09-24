@@ -131,52 +131,11 @@ export interface ColumnPageDetail {
   creatorUserId: string | null
 }
 
-/* ----------------------------- JsToJava 文件打开 ----------------------------- */
-
-/**
- * 复刻 api.md 中文章详情 content 里的 JsToJava.open_file 逻辑。
- *
- * 旧代码：
- *   if(window.JsToJava) { window.JsToJava.open_file(url) }
- *   else { window.open(url) }
- *
- * 在 Web（Electron/浏览器）环境内没有 JsToJava 桥，统一回退为 window.open。
- * 在安卓/iOS App 内嵌 WebView 中若存在 JsToJava.open_file 则优先调用，
- * 由原生层接管 PDF 打开（避免浏览器直接下载）。
+/*
+ * 已删除 openFile() / extractFileUrl()：全工程无调用方，属遗留死代码。
+ * （专栏附件现在由 ColumnDetailView 的 processPdfs/processVideos +
+ *   事件委托统一处理，不再需要这两个函数。）
  */
-interface JsToJavaBridge {
-  open_file: (url: string) => void
-}
-declare global {
-  interface Window {
-    JsToJava?: JsToJavaBridge
-  }
-}
-
-export function openFile(url: string): void {
-  if (window.JsToJava && typeof window.JsToJava.open_file === 'function') {
-    window.JsToJava.open_file(url)
-  } else {
-    window.open(url, '_blank')
-  }
-}
-
-/**
- * 从文章详情 content (HTML) 中解析出 PDF / 附件链接。
- * content 形如：
- *   <div class="easy-editor-upload pdf-wrapper" data-url="http://...pdf"> ... </div>
- * 也兼容 <a href="..."> 形式。返回第一个可打开的文件地址。
- */
-export function extractFileUrl(content: string): string | null {
-  if (!content) return null
-  // 优先取 data-url 属性
-  const dataMatch = content.match(/data-url=(["']?)([^"'\s]+)\1/i)
-  if (dataMatch && dataMatch[2]) return dataMatch[2]
-  // 再取 <a href="...">
-  const hrefMatch = content.match(/href=(["'])([^"']+)\1/i)
-  if (hrefMatch && hrefMatch[2]) return hrefMatch[2]
-  return null
-}
 
 /* ----------------------------- 接口实现 ----------------------------- */
 
