@@ -119,7 +119,33 @@ export async function request<T = any>(
   if (resp.status === 401 && !skipAuth && !skipRecover) {
     const recovered = await tryRecover()
     if (recovered) {
-      return request<T>(url, { ...options, skipRecover: true })
+      try {
+        return await request<T>(url, { ...options, skipRecover: true })
+      } catch (e: any) {
+        const msg = String(e?.message || '')
+        if (!msg.includes('CurrentUserDidNotLoginToTheApplication')) throw e
+        // 刷新「成功」只换发了新 JWT，并不会重建服务端的登录记录；
+        // 记录一旦丢失（服务器重启/回收、会话被清），重试仍是 401 +
+        // CurrentUserDidNotLoginToTheApplication。此时改用记住的凭据
+        // 直接重新登录一次（TokenAuth/Login 会新建登录记录）；
+        // 没记住密码则干净地登出并回登录页，避免停在僵尸登录态。
+        const { useAuthStore } = await import('@/stores/auth')
+        try {
+          await useAuthStore().autoRelogin()
+        } catch {
+          useAuthStore().logout()
+          await redirectLogin()
+          throw new Error('登录状态已失效（未记住密码，无法自动重登），请重新登录')
+        }
+        try {
+          return await request<T>(url, { ...options, skipRecover: true })
+        } catch (e2: any) {
+          if (!String(e2?.message || '').includes('CurrentUserDidNotLoginToTheApplication')) throw e2
+          useAuthStore().logout()
+          await redirectLogin()
+          throw new Error('登录状态已失效，请重新登录')
+        }
+      }
     }
     const { useAuthStore } = await import('@/stores/auth')
     useAuthStore().logout()

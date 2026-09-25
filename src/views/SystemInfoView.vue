@@ -118,7 +118,7 @@
     <el-dialog v-model="noticeVisible" :title="notice?.title || '公告'" width="640px">
       <div v-if="notice" class="notice">
         <div class="muted">{{ notice.creationTime }}</div>
-        <div class="notice-body" v-html="safeNoticeHtml"></div>
+        <div ref="noticeBodyRef" class="notice-body" v-html="safeNoticeHtml"></div>
       </div>
       <el-empty v-else description="公告不存在" />
     </el-dialog>
@@ -126,7 +126,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, nextTick, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import {
@@ -147,8 +148,12 @@ import {
   type UnreadItem,
   type NoticeInfo
 } from '@/api/system'
-import { safeHtml } from '@/utils/sanitize'
+import { safeLessonHtml } from '@/utils/sanitize'
+import { renderLessonContent, type AttachmentHandlers } from '@/composables/useContentRenderer'
+import { useAuthStore } from '@/stores/auth'
 
+const router = useRouter()
+const auth = useAuthStore()
 const loading = reactive({ todo: false, ability: false, msg: false, topic: false, setting: false })
 
 const todoCards = ref<{ key: string; label: string; value: number }[]>([])
@@ -163,9 +168,36 @@ const whiteUrls = ref('')
 const commonSites = ref<any[]>([])
 const notice = ref<NoticeInfo | null>(null)
 const noticeVisible = ref(false)
+const noticeBodyRef = ref<HTMLElement | null>(null)
 
-/** 公告正文是服务端富文本，走 v-html 前必须净化（防内联事件 XSS） */
-const safeNoticeHtml = computed(() => safeHtml(notice.value?.content))
+/**
+ * 公告正文是服务端富文本，走 v-html 前必须净化（防内联事件 XSS）。
+ * 用 safeLessonHtml（放行 <object>/<embed>）——公告里的 PDF/文件附件正是用
+ * <object data> 承载的，普通 safeHtml 会把附件标签剥掉导致附件消失；
+ * 渲染后还需 renderLessonContent 把 object/video/pdf/ppt 节点改写为可点链接，
+ * 否则附件显示出来也打不开（复刻旧站 change_all 的消息附件渲染逻辑）。
+ */
+const safeNoticeHtml = computed(() => safeLessonHtml(notice.value?.content))
+
+/** 附件交互：与优课畅学章节一致，在线查看复用统一查看器 */
+const noticeHandlers: AttachmentHandlers = {
+  onViewObject: (url, name) => openViewer('video', url, name),
+  onViewPpt: (url, name) => openViewer('pptx', url, name),
+  onViewPdf: (url, name) => openViewer('pdf', url, name),
+  onViewOffice: (url, name) => openViewer(officeKindFromName(url, name), url, name),
+  onDownload: (url, _name) => window.open(url, '_blank')
+}
+
+/** 从文件名/URL 推断 Office 查看器类型（默认 docx） */
+function officeKindFromName(url: string, name: string): 'docx' | 'xlsx' {
+  const src = (name || url || '').toLowerCase().split('?')[0].split('#')[0]
+  if (/\.(xlsx?|csv)$/.test(src)) return 'xlsx'
+  return 'docx'
+}
+
+function openViewer(kind: 'video' | 'pptx' | 'pdf' | 'docx' | 'xlsx', url: string, name: string) {
+  router.push({ path: '/lesson/viewer', query: { kind, url, name } })
+}
 
 const TODO_LABELS: Record<string, string> = {
   homeworkCount: '作业',
@@ -183,7 +215,8 @@ function unreadLabel(t: number) {
 async function loadTodo() {
   loading.todo = true
   try {
-    const d = await getTodoSummary()
+    // 接口必须显式传 studentId（官方 App 如此），否则服务端一律返回全 0
+    const d = await getTodoSummary(auth.effectiveUserId)
     todoCards.value = Object.keys(TODO_LABELS).map((k) => ({
       key: k,
       label: TODO_LABELS[k],
@@ -253,6 +286,9 @@ async function openNotice(id?: number) {
   noticeVisible.value = true
   try {
     notice.value = await getNotice(id)
+    // 等弹窗内容渲染到 DOM 后，把附件节点改写为「在线查看 / 点击下载」链接
+    await nextTick()
+    if (noticeBodyRef.value) renderLessonContent(noticeBodyRef.value, noticeHandlers)
   } catch (e: any) {
     ElMessage.error('公告获取失败：' + (e?.message || e))
   }

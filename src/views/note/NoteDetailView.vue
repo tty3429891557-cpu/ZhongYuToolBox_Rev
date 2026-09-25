@@ -129,6 +129,7 @@ import { ArrowLeft, ArrowRight, Document, Download, PictureFilled, MoreFilled, D
 import JSZip from 'jszip'
 import { jsPDF } from 'jspdf'
 import { getNoteResources, getNoteResourcesForZip, moveNoteToRecycleBin, restoreNote, type NoteResource } from '@/api/note'
+import { bumpNoteDataVersion } from '@/utils/noteEvents'
 import { proxyImgSrc } from '@/utils/proxy'
 import { downloadBlob } from '@/utils/download'
 import { useIsMobile } from '@/composables/useIsMobile'
@@ -171,6 +172,9 @@ async function onMoveToRecycle() {
   deleting.value = true
   try {
     const res = await moveNoteToRecycleBin([fileId.value])
+    // 通知列表页数据已变更：/note 有 keepAlive + 已加载缓存，
+    // 不通知的话返回列表后这条笔记仍会显示（「删了不消失」）。
+    bumpNoteDataVersion()
     // 注意：MoveToRecycleBin 对根目录下的笔记会返回 parentId "-1"，
     // 而 Restore 只接受 "0" 表示根目录（实测确认），故此处做一次归一化。
     const raw = String(res?.[0]?.parentId ?? '0')
@@ -186,6 +190,7 @@ async function onMoveToRecycle() {
       .then(async () => {
         try {
           await restoreNote(parentId, fileId.value)
+          bumpNoteDataVersion()
           ElMessage.success('已恢复到原目录')
         } catch (e: any) {
           ElMessage.error('恢复失败：' + (e?.message || e))
@@ -286,7 +291,9 @@ async function loadResources() {
  *     close-on-click-modal=false，用户无法关闭 → 整页锁死。
  */
 async function loadImageAsDataURL(url: string): Promise<{ dataUrl: string; mime: string }> {
-  const res = await fetch(url)
+  // cache:'no-store'：学校 OSS 不带 Vary: Origin，<img> 预览的 no-cors 响应（无 ACAO）
+  // 会污染缓存，导出时 fetch(cors) 命中同一缓存必被 CORS 拒绝（Failed to fetch），必须绕开
+  const res = await fetch(url, { cache: 'no-store' })
   if (!res.ok) throw new Error(`图片下载失败（HTTP ${res.status}）`)
   const blob = await res.blob()
   if (!blob || blob.size === 0) throw new Error('图片内容为空')
@@ -329,42 +336,51 @@ async function exportPdf() {
   try {
     const pdf = new jsPDF('p', 'pt', 'a4')
     let added = 0
+    let skipped = 0
     for (let i = 0; i < pages.value.length; i++) {
       const pageData = pageMap.value[pages.value[i]]
       if (!pageData?.thumbnail) continue
 
-      const { dataUrl: img, mime } = await loadImageAsDataURL(pageData.thumbnail.url)
-      const imgObj = new Image()
-      imgObj.src = img
-      await decodeImage(imgObj)
+      try {
+        const { dataUrl: img, mime } = await loadImageAsDataURL(pageData.thumbnail.url)
+        const imgObj = new Image()
+        imgObj.src = img
+        await decodeImage(imgObj)
 
-      const natW = imgObj.naturalWidth || imgObj.width
-      const natH = imgObj.naturalHeight || imgObj.height
-      // 宽高为 0 时 ratio 会变成 Infinity/NaN，jsPDF 会画出不可见内容
-      if (!natW || !natH) throw new Error(`第 ${i + 1} 页图片尺寸无效（${natW}x${natH}）`)
+        const natW = imgObj.naturalWidth || imgObj.width
+        const natH = imgObj.naturalHeight || imgObj.height
+        // 宽高为 0 时 ratio 会变成 Infinity/NaN，jsPDF 会画出不可见内容
+        if (!natW || !natH) throw new Error(`图片尺寸无效（${natW}x${natH}）`)
 
-      const pageWidth = pdf.internal.pageSize.getWidth()
-      const pageHeight = pdf.internal.pageSize.getHeight()
-      const ratio = Math.min(pageWidth / natW, pageHeight / natH)
-      const imgWidth = natW * ratio
-      const imgHeight = natH * ratio
-      const x = (pageWidth - imgWidth) / 2
-      const y = (pageHeight - imgHeight) / 2
+        const pageWidth = pdf.internal.pageSize.getWidth()
+        const pageHeight = pdf.internal.pageSize.getHeight()
+        const ratio = Math.min(pageWidth / natW, pageHeight / natH)
+        const imgWidth = natW * ratio
+        const imgHeight = natH * ratio
+        const x = (pageWidth - imgWidth) / 2
+        const y = (pageHeight - imgHeight) / 2
 
-      // 按真实 MIME 选择格式：png 数据硬写成 JPEG 会让部分阅读器无法渲染
-      const format = mime.includes('png') ? 'PNG' : 'JPEG'
+        // 按真实 MIME 选择格式：png 数据硬写成 JPEG 会让部分阅读器无法渲染
+        const format = mime.includes('png') ? 'PNG' : 'JPEG'
 
-      if (added > 0) pdf.addPage()
-      pdf.addImage(img, format, x, y, imgWidth, imgHeight)
-      added++
+        if (added > 0) pdf.addPage()
+        pdf.addImage(img, format, x, y, imgWidth, imgHeight)
+        added++
 
-      pdf.setFontSize(8)
-      pdf.setTextColor(100)
-      const textWidth = pdf.getTextWidth(PDF_FOOTER)
-      pdf.text(PDF_FOOTER, pageWidth - textWidth - 20, pageHeight - 20)
+        pdf.setFontSize(8)
+        pdf.setTextColor(100)
+        const textWidth = pdf.getTextWidth(PDF_FOOTER)
+        pdf.text(PDF_FOOTER, pageWidth - textWidth - 20, pageHeight - 20)
+      } catch (e) {
+        // 单页取图失败（坏链/缓存污染残留）只跳过该页，不让整个 PDF 报废
+        console.warn(`跳过第 ${i + 1} 页：`, e)
+        skipped++
+      }
 
       progressPercent.value = Math.round(((i + 1) / pages.value.length) * 100)
     }
+    if (added === 0) throw new Error('没有可用的页面图片，导出中止')
+    if (skipped > 0) ElMessage.warning(`${skipped} 页获取失败已跳过`)
     pdf.save(fileName.value + '.pdf')
     ElMessage.success('PDF 导出完成')
   } catch (e: any) {
@@ -396,9 +412,10 @@ async function downloadZip() {
         item.ossImageUrl.startsWith('http') ? item.ossImageUrl : OSS_BASE + item.ossImageUrl
       )
       progressPercent.value = Math.round(((i + 1) / list.length) * 100)
-      if (/\.(jpg|jpeg|png|webp)$/i.test(url)) {
-        // 原实现不检查 resp.ok：代理失效时会把「错误页 HTML」存成 .jpg，解压后全是坏图
-        const resp = await fetch(url)
+      if (!/\.(jpg|jpeg|png|webp)$/i.test(url)) continue
+      try {
+        // cache:'no-store'：绕过被 <img> 预览污染的 HTTP 缓存（无 ACAO 头会导致 CORS 拒绝）
+        const resp = await fetch(url, { cache: 'no-store' })
         if (!resp.ok) {
           console.warn('跳过下载失败的图片', url, resp.status)
           continue
@@ -408,6 +425,9 @@ async function downloadZip() {
         if (!count[item.pageIndex]) count[item.pageIndex] = 1
         const suffix = item.resourceType === 2 ? 'thumbnail' : count[item.pageIndex]++
         zip.file(`${item.pageIndex + 1}-${suffix}.jpg`, image)
+      } catch (e) {
+        // 单个资源网络/CORS 失败只跳过该项，不能让整包下载全部报废
+        console.warn('跳过获取失败的图片', url, e)
       }
     }
 

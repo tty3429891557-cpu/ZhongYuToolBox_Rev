@@ -9,7 +9,7 @@
 import os, shutil, subprocess, sys
 
 HOST = r'E:\loshop-preservation-20260922\_work\ZytbSiteHost'
-DIST = r'E:\loshop-preservation-20260922\sources\ZhongYuToolBox_Rev\dist'
+DIST = r'E:\loshop-preservation-20260922\_work\github\ZhongYuToolBox_Rev\dist'
 PUB = r'E:\loshop-preservation-20260922\_work\newsite\publish-multi'
 PS1 = r'E:\loshop-preservation-20260922\_work\author-src\local-proxy.ps1'
 

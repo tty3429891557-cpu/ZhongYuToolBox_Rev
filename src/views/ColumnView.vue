@@ -385,7 +385,7 @@ const iframeBase = computed(() => resolveIframeBase(auth.apiBaseUrl || DEFAULT_A
 const token = computed(() => auth.token || '')
 const newTabUrl = computed(
   () =>
-    `${iframeBase}/navPage.html?apiHost=${encodeURIComponent(
+    `${iframeBase.value}/navPage.html?apiHost=${encodeURIComponent(
       apiHost.value
     )}&apiToken=${token.value}#/list?messageType=pager`
 )

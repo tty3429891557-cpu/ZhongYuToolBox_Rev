@@ -4,6 +4,10 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/x-icon" href="/icon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- 不发送 Referer：sxz 的 OSS 桶（ezy-sxz）配置了 Referer 白名单防盗链，
+         本地站点 127.0.0.1 的 Referer 会被 403 拒绝（denied by bucket referer policy），
+         浏览器随后以 ORB 拦截响应导致图片全部裂掉；无 Referer 则各校 OSS 均放行。 -->
+    <meta name="referrer" content="no-referrer" />
     <title>中育ToolBox</title>
   </head>
   <body>

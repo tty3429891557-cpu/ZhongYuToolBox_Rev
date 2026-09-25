@@ -11,6 +11,101 @@ import { PROXY_REMOTE, PROXY_LOCAL, PROXY_LOCAL_PING } from '@/config'
 /** 当前生效的代理基地址（被 proxyUrl / proxyImgSrc / getProxyBaseUrl 共用） */
 let proxyBaseUrl: string = PROXY_REMOTE
 
+/* ============================================================
+ * 同源转发代理（解决「需要 CORS 的抓取」）
+ * ------------------------------------------------------------
+ * 背景：中育 CDN（*.zyai.cc / *alicdn* / OSS）的 PDF 等二进制资源**不返回
+ * Access-Control-Allow-Origin**，因此 `<img>` 能显示（图片不需要 CORS），
+ * 但 pdfjs.getDocument(url) 这类**用 fetch 读取字节**的场景会被浏览器直接拦截：
+ *   "blocked by CORS policy: No 'Access-Control-Allow-Origin' header"
+ * → 在线专栏/课程的 PDF 就表现为「点开一直转圈 / Failed to fetch」。
+ *
+ * 站点宿主程序（中育ToolBox.exe）本身在 **同源** 暴露了转发端点：
+ *   GET /proxy/<目标URL>   或   GET /proxy?u=<URL编码目标>
+ * 转发响应天然带 CORS 头，且同源请求根本不涉及跨域限制。
+ * 因此这里优先用「当前页面同源 /proxy/」，其次回落本机 tbHelper(5005)，
+ * 最后才直连（直连在无代理环境下仍可能被 CORS 拦截，属最佳努力）。
+ * ============================================================ */
+
+/** 同源转发地址前缀（相对路径，随页面 origin 自动生效） */
+const SAME_ORIGIN_PROXY = '/proxy/'
+
+/** 同源 /proxy/ 是否可用（null=未探测） */
+let sameOriginOk: boolean | null = null
+/** 正在进行中的同源探测，避免并发重复探测 */
+let sameOriginProbe: Promise<boolean> | null = null
+
+/** 探测同源 /proxy/ 是否可用（带超时，失败即视为不可用） */
+async function pingSameOriginProxy(): Promise<boolean> {
+  if (sameOriginProbe) return sameOriginProbe
+  sameOriginProbe = (async () => {
+    const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null
+    const timer = ctl ? window.setTimeout(() => ctl.abort(), 2500) : 0
+    try {
+      const resp = await fetch(SAME_ORIGIN_PROXY + 'ping', {
+        method: 'GET',
+        signal: ctl ? ctl.signal : undefined
+      })
+      // 静态站点（如 dev / 纯静态托管）对不存在的 /proxy/ 可能返回 404/HTML，
+      // 因此必须校验响应体为约定的 'pong'，否则会把 404 误判成可用。
+      if (!resp.ok) return false
+      const txt = await resp.text()
+      return txt.trim() === 'pong'
+    } catch {
+      return false
+    } finally {
+      if (timer) window.clearTimeout(timer)
+    }
+  })()
+  try {
+    return await sameOriginProbe
+  } finally {
+    sameOriginProbe = null
+  }
+}
+
+/** 拼接转发地址（绝对 URL 走 path 形式，避免 query 形式里 encodeURIComponent 的坑） */
+function joinProxy(base: string, url: string): string {
+  // 目标 URL 里可能带 // 与 ?，直接拼在 path 后会被部分服务器/浏览器改写，
+  // 因此对整段做一次 encodeURIComponent 放进 query 更稳妥；但宿主两种都支持，
+  // 这里用 path 形式并对 :// 做保护（宿主按 {**target} 捕获，保留原样）。
+  return base.endsWith('/') ? base + url : base + '/' + url
+}
+
+/**
+ * 需要 CORS 的抓取地址（pdfjs / arraybuffer / blob 下载等）。
+ *
+ * 与 proxyImgSrc 的区别：proxyImgSrc 追求「图片能显示」，已知 CDN 直连即可；
+ * 本函数追求「能读到字节」，因此**已知无 CORS 头的 CDN 也必须走转发**。
+ *
+ * @param url 原始资源地址
+ * @returns 可直接交给 fetch / pdfjs.getDocument 的地址
+ */
+export async function proxyCorsUrl(url: string): Promise<string> {
+  if (!url || typeof url !== 'string') return url
+  // 已经是同源 / 本地转发地址，直接返回
+  if (url.startsWith(SAME_ORIGIN_PROXY) || url.startsWith(PROXY_LOCAL)) return url
+  // 相对路径（如 '/xxx.pdf'）本身就是同源，无需转发
+  if (url.startsWith('/') && !url.startsWith('//')) return url
+  // 绝对 URL 但与本页面同源：也无需转发（同源无跨域限制）
+  try {
+    const abs = new URL(url, location.href)
+    if (abs.origin === location.origin) return url
+  } catch {
+    /* 非标准 URL，继续走转发 */
+  }
+
+  // ① 同源 /proxy/（宿主程序自带，最稳，且无跨域限制）
+  if (sameOriginOk === null) sameOriginOk = await pingSameOriginProxy()
+  if (sameOriginOk) return joinProxy(SAME_ORIGIN_PROXY, url)
+
+  // ② 本机 tbHelper(5005)
+  if (await pingLocalProxy()) return joinProxy(PROXY_LOCAL, url)
+
+  // ③ 直连（尽力而为；无 CORS 头的源仍可能被拦截）
+  return url
+}
+
 /** 拼接资源代理地址 */
 export function proxyUrl(url: string): string {
   if (!url) return url

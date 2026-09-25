@@ -48,7 +48,7 @@ const url = computed(() => {
   const t = token.value
   if (props.kind === 'column') {
     // navPage.html（绝对地址，跨域）
-    return `${iframeBase}/navPage.html?apiHost=${encodeURIComponent(
+    return `${iframeBase.value}/navPage.html?apiHost=${encodeURIComponent(
       apiHost.value
     )}&apiToken=${t}#/list?messageType=pager`
   }

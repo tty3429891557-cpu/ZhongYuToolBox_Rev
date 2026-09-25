@@ -26,8 +26,18 @@ export interface TodoSummary {
   [k: string]: any
 }
 
-export async function getTodoSummary(): Promise<TodoSummary> {
-  const r = await request<{ result: TodoSummary }>('/api/services/app/StudentUser/GetStudentUserTodoAsync', {
+/**
+ * 待办计数。
+ * 官方 APK 反编译（HomeService.java / HomeViewModel）显示该接口**必须显式传 studentId**
+ * （即当前学生的用户 id，来源 GetInfoAsync 的 id 字段）；不传时服务端不做按 token
+ * 兜底识别，一律返回全 0（实测 30174：无参全 0，带参 homeworkCount=144）。
+ */
+export async function getTodoSummary(studentId?: number | string | null): Promise<TodoSummary> {
+  let url = '/api/services/app/StudentUser/GetStudentUserTodoAsync'
+  if (studentId !== undefined && studentId !== null && studentId !== '') {
+    url += `?studentId=${encodeURIComponent(String(studentId))}`
+  }
+  const r = await request<{ result: TodoSummary }>(url, {
     method: 'GET',
     headers: APP_HEADERS
   })

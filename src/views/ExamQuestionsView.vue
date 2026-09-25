@@ -85,6 +85,9 @@ const questions = ref<ParsedQuestion[]>([])
 const examId = ref<number | null>(null)
 
 async function load() {
+  // 防御：离开页面后 route.params.taskId 已不存在，Number(undefined) = NaN，
+  // 不拦住就会拿 NaN 去请求，ABP 报「id: The value 'NaN' is not valid」弹错误 toast
+  if (!Number.isFinite(taskId.value)) return
   loading.value = true
   questions.value = []
   try {
@@ -151,10 +154,16 @@ function sheetCommand(cmd: string) {
 }
 
 onMounted(load)
-// keep-alive 会复用同一组件实例，切换不同考试任务时需重新加载
+// keep-alive 会复用同一组件实例，切换不同考试任务时需重新加载。
+// 必须守卫「当前路由仍是本页」：离开后（如返回列表、去概览/题目分析）
+// route.params 会变化/消失，不判断就会用 NaN（或重复）触发加载——
+// 表现为功能正常、但凭空弹「加载题目失败：id: The value 'NaN' is not valid」
 watch(
   () => [route.params.taskId, route.query.name],
-  () => load()
+  () => {
+    if (route.name !== 'exam-questions') return
+    load()
+  }
 )
 </script>
 

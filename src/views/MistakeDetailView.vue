@@ -8,6 +8,13 @@
     <div v-loading="loading" class="detail-body">
       <el-empty v-if="!loading && !hasContent" description="无详情内容" />
       <template v-if="!loading">
+        <el-card v-if="shootImg" class="block" header="题目截图">
+          <el-image :src="shootImg" fit="contain" class="note-img" :preview-src-list="[shootImg]" preview-teleported hide-on-click-modal>
+            <template #error>
+              <div class="thumb-ph"><el-icon><Picture /></el-icon></div>
+            </template>
+          </el-image>
+        </el-card>
         <el-card v-if="qstHtml" class="block" header="题目">
           <div class="qst-html" v-html="qstHtml"></div>
         </el-card>
@@ -51,6 +58,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
 import { ArrowLeft, Picture } from '@element-plus/icons-vue'
 import { proxyImgSrc } from '@/utils/proxy'
 import { safeHtml } from '@/utils/sanitize'
@@ -65,6 +73,8 @@ const router = useRouter()
 
 const itemId = computed(() => String(route.params.itemId || ''))
 const title = computed(() => String(route.query.source || '错题详情'))
+/** 列表传入的题目截图：拍照错题（未关联题库）详情接口返回 null，截图就是全部内容 */
+const shootImg = computed(() => (route.query.shoot ? proxyImgSrc(String(route.query.shoot)) : ''))
 
 const loading = ref(false)
 const qstHtml = ref('')
@@ -74,7 +84,7 @@ const noteImg = ref('')
 const picNotes = ref<string[]>([])
 
 const hasContent = computed(
-  () => !!qstHtml.value || !!ansHtml.value || !!expHtml.value || !!noteImg.value || picNotes.value.length > 0
+  () => !!shootImg.value || !!qstHtml.value || !!ansHtml.value || !!expHtml.value || !!noteImg.value || picNotes.value.length > 0
 )
 
 function goBack() {
@@ -122,7 +132,10 @@ async function load() {
   try {
     const detail = await getMistakeDetail(itemId.value)
     if (!detail) {
-      window.alert('该错题不存在或已删除')
+      // 拍照错题（只有 stemShoot 截图、未关联题库）服务端固定返回 null，
+      // 此时题目截图已由 shootImg 兜底展示；两者都没有才提示不存在。
+      // 注意不要用 window.alert：APK WebView 不一定弹得出，界面只会显示「无详情内容」。
+      if (!shootImg.value) ElMessage.warning('该错题不存在或已删除')
       return
     }
 

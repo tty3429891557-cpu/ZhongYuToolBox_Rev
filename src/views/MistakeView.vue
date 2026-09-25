@@ -102,7 +102,12 @@ function onTabChange(name: string | number) {
 function openDetail(item: MistakeItem) {
   router.push({
     path: `/mistake/${item.id}`,
-    query: { book: activeBookId.value, source: item.source }
+    query: {
+      book: activeBookId.value,
+      source: item.source,
+      // 拍照错题（未关联题库）的详情接口固定返回 null，列表自带的题目截图就是全部内容
+      shoot: item.stemShoot || ''
+    }
   })
 }
 

@@ -4,7 +4,7 @@
       <el-icon class="back" @click="goBack"><ArrowLeft /></el-icon>
       <span class="appbar-title">{{ name || '附件查看' }}</span>
       <el-button
-        v-if="kind === 'pdf' || kind === 'video'"
+        v-if="kind"
         class="appbar-download"
         type="primary"
         plain
@@ -27,18 +27,19 @@
         </div>
       </div>
 
-      <!-- PPT（@vue-office/pptx 组件渲染） -->
-      <div v-else-if="kind === 'pptx'" class="pptx-box">
-        <vue-office-pptx
-          v-if="!pptxError"
-          :src="url"
+      <!-- PPT / Word / Excel（@vue-office 组件渲染，失败回落下载） -->
+      <div v-else-if="isOfficeKind" class="pptx-box">
+        <component
+          :is="officeComponent"
+          v-if="!officeError && officeSrc"
+          :src="officeSrc"
           class="pptx-el"
-          @error="onPptxError"
+          @error="onOfficeError"
         />
         <el-result
-          v-else
+          v-else-if="officeError"
           icon="error"
-          title="PPT 预览失败"
+          :title="officeLabel + '预览失败'"
           sub-title="当前环境无法渲染该文件，请改用下载后本地打开"
         >
           <template #extra>
@@ -53,13 +54,17 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowLeft, Download } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import DPlayer from 'dplayer'
 import VueOfficePptx from '@vue-office/pptx'
-import { proxyImgSrc } from '@/utils/proxy'
+import VueOfficeDocx from '@vue-office/docx'
+import VueOfficeExcel from '@vue-office/excel'
+import '@vue-office/docx/lib/index.css'
+import '@vue-office/excel/lib/index.css'
+import { proxyImgSrc, proxyCorsUrl } from '@/utils/proxy'
 import { downloadBlob, downloadUrl } from '@/utils/download'
 
 const route = useRoute()
@@ -69,12 +74,29 @@ const kind = String(route.query.kind || '')
 const url = String(route.query.url || '')
 const name = String(route.query.name || '')
 
+/* ---------- Office（pptx / docx / xlsx）统一处理 ---------- */
+/** 是否走 @vue-office 组件渲染 */
+const isOfficeKind = computed(() => kind === 'pptx' || kind === 'docx' || kind === 'xlsx')
+/** 依据 kind 选择具体渲染组件 */
+const officeComponent = computed(() => {
+  if (kind === 'docx') return VueOfficeDocx
+  if (kind === 'xlsx') return VueOfficeExcel
+  return VueOfficePptx
+})
+const officeLabel = computed(() => {
+  if (kind === 'docx') return 'Word 文档'
+  if (kind === 'xlsx') return 'Excel 表格'
+  return 'PPT'
+})
+/** Office 组件实际取数地址（需经 CORS 转发，否则跨域被拦截） */
+const officeSrc = ref('')
+const officeError = ref(false)
+
 const pdfRef = ref<HTMLElement | null>(null)
 const videoRef = ref<HTMLElement | null>(null)
 const pdfLoading = ref(false)
 const pdfTotal = ref(0)
 const pdfRendered = ref(0)
-const pptxError = ref(false)
 const downloading = ref(false)
 let dp: DPlayer | null = null
 
@@ -83,14 +105,14 @@ function goBack() {
   else router.push('/lesson')
 }
 
-/* 通过 blob 方式下载 PDF（避免直接打开/跨域限制） */
+/* 通过 blob 方式下载（避免直接打开/跨域限制） */
 async function download() {
   if (!url || downloading.value) return
   downloading.value = true
   try {
     // 用 URL 中的文件名，兜底用传入的 name
     const fromUrl = decodeURIComponent(url.split('?')[0].split('/').pop() || '')
-    await downloadUrl(proxyImgSrc(url), fromUrl || name || 'download.pdf')
+    await downloadUrl(proxyImgSrc(url), fromUrl || name || 'download')
   } catch (e: any) {
     ElMessage.error('下载失败：' + (e?.message || e))
   } finally {
@@ -98,9 +120,19 @@ async function download() {
   }
 }
 
-function onPptxError(e: any) {
-  console.warn('pptx 渲染失败', e)
-  pptxError.value = true
+function onOfficeError(e: any) {
+  console.warn('office 渲染失败', e)
+  officeError.value = true
+}
+
+/** 解析 Office 组件的取数地址（走 CORS 转发，失败则回落直连） */
+async function prepareOfficeSrc() {
+  if (!isOfficeKind.value || !url) return
+  try {
+    officeSrc.value = await proxyCorsUrl(url)
+  } catch {
+    officeSrc.value = url
+  }
 }
 
 /* ---------- PDF 渲染（pdfjs-dist） ---------- */
@@ -152,8 +184,13 @@ async function renderPdf(src: string) {
     pdfRendered.value = 0
 
     // 修复一：原来用 proxyUrl()，默认前缀是已下线的 loshop 下载代理 → 所有 PDF 打不开。
-    // 改用 proxyImgSrc()：OSS / 中育 CDN 直连，非 CDN 才回落到代理。
-    const doc = (await pdfjs.getDocument(proxyImgSrc(src)).promise) as PdfDoc
+    // 修复二（CORS）：中育 CDN（*.zyai.cc / *alicdn*）的 PDF **不返回 CORS 头**，
+    //   浏览器对 pdfjs.getDocument(url) 的跨域读取会直接拦截：
+    //   "blocked by CORS policy: No 'Access-Control-Allow-Origin' header"。
+    //   `<img>` 之所以正常，是因为图片不需要 CORS。故改为走「同源 /proxy/ 转发」
+    //   （站点宿主程序内置，带 CORS 头且同源无跨域），回落 tbHelper(5005)。
+    const fetchUrl = await proxyCorsUrl(src)
+    const doc = (await pdfjs.getDocument(fetchUrl).promise) as PdfDoc
     pdfDoc = doc
     pdfTotal.value = doc.numPages
 
@@ -223,6 +260,7 @@ function initDPlayer(src: string) {
 onMounted(() => {
   if (kind === 'video') initDPlayer(url)
   else if (kind === 'pdf') renderPdf(url)
+  else if (isOfficeKind.value) void prepareOfficeSrc()
 })
 
 onBeforeUnmount(() => {

@@ -14,7 +14,7 @@
             <el-select v-model="schoolSelect" @change="onSchoolChange" style="width: 100%">
               <el-option v-for="s in SCHOOLS" :key="s.value" :label="s.label" :value="s.value" />
             </el-select>
-            <div class="school-hint">
+            <div v-if="schoolSelect !== 'auto'" class="school-hint">
               学校须与账号所属学校一致：两校后端不同、数据不互通，选错学校即使能登录也取不到数据。
             </div>
           </el-form-item>
@@ -81,12 +81,12 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
 import { loadObfuscatedPassword } from '@/utils/secretStore'
-import { SCHOOLS } from '@/config'
+import { SCHOOLS, AUTO_SCHOOL_VALUE } from '@/config'
 
 const router = useRouter()
 const auth = useAuthStore()
 
-const schoolSelect = ref('sxz')
+const schoolSelect = ref(AUTO_SCHOOL_VALUE)
 const schoolCode = ref('')
 const account = ref('')
 const password = ref('')

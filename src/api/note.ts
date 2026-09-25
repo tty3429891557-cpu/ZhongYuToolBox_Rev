@@ -48,9 +48,14 @@ function authHeaders(): Record<string, string> {
 export interface NoteItem {
   fileId: string
   fileName: string
+  /** 12 = 笔记，0 = 文件夹（服务端已不再返回 type=1） */
   type: number
   createTime?: string
   updateTime?: string
+  /** 所属目录 fileId（根目录为 "0"） */
+  parentId?: string
+  /** 已移入回收站（为 true 时不应出现在正常列表/搜索里） */
+  isRecycleBin?: boolean
 }
 
 export interface NoteResource {
@@ -100,7 +105,16 @@ export async function getNotesByParentId(parentId = '0'): Promise<NoteItem[]> {
   return (data.noteList || []) as NoteItem[]
 }
 
-/** 获取全部笔记（复刻 noteGetAll 的取数部分，仅保留 type 1/12） */
+/**
+ * 获取全部笔记（复刻 noteGetAll 的取数部分）。
+ *
+ * 过滤规则（实测 GetAll 返回的 noteList 字段）：
+ *   type = 12 → 笔记；type = 0 → 文件夹；type = 1 服务端已不再返回。
+ *   isRecycleBin = true → 已移入回收站，**必须排除**，否则删除后的笔记
+ *   仍会出现在「全部笔记」列表里（表现为「删了不消失」）。
+ * 原实现只按 `type === 1 || type === 12` 过滤：既漏了 type=0 文件夹，
+ * 又把回收站笔记（也是 type=12）当成正常笔记返回了。
+ */
 export async function getAllNotes(): Promise<NoteItem[]> {
   const res = await fetch(`${apiBase()}/CloudNotes/api/Notes/GetAll`, {
     method: 'GET',
@@ -110,10 +124,10 @@ export async function getAllNotes(): Promise<NoteItem[]> {
   // 响应体的 data 字段为 AES 加密内容，需解密后才能取 noteList
   const data = decodeNoteData<{ noteList?: NoteItem[] }>(await res.json())
   const list: NoteItem[] = data.noteList || []
-  return list.filter((item) => item.type === 1 || item.type === 12)
+  return list.filter((item) => item.type === 12 && item.isRecycleBin !== true)
 }
 
-/** 关键词搜索笔记（复刻 searchNotes，仅保留 type 1/12） */
+/** 关键词搜索笔记（复刻 searchNotes，排除回收站条目） */
 export async function searchNotes(fileName: string): Promise<NoteItem[]> {
   const query = `fileName=${fileName}`
   const url = notesPath('Search', aesEncrypt(query))
@@ -121,7 +135,7 @@ export async function searchNotes(fileName: string): Promise<NoteItem[]> {
   check401(res.status)
   const data = decodeNoteData<{ noteList?: NoteItem[] }>(await res.json())
   const list: NoteItem[] = data.noteList || []
-  return list.filter((item) => item.type === 1 || item.type === 12)
+  return list.filter((item) => item.type === 12 && item.isRecycleBin !== true)
 }
 
 /** 按 fileId 获取笔记的图片资源列表（复刻 noteDownload 取数部分） */
@@ -222,7 +236,7 @@ export async function getRecycleNotes(): Promise<NoteItem[]> {
   check401(res.status)
   const data = decodeNoteData<{ noteList?: NoteItem[] }>(await res.json())
   const list: NoteItem[] = data.noteList || []
-  return list.filter((item) => (item as any).isRecycleBin === true)
+  return list.filter((item) => item.isRecycleBin === true)
 }
 
 /** 彻底删除笔记 */

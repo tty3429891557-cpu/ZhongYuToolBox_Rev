@@ -161,7 +161,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onActivated } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Folder, Document, Search, Refresh, Delete, RefreshLeft } from '@element-plus/icons-vue'
@@ -173,6 +173,7 @@ import {
   restoreNote,
   type NoteItem
 } from '@/api/note'
+import { noteDataVersion } from '@/utils/noteEvents'
 import PdfUploadPanel from './PdfUploadPanel.vue'
 
 const router = useRouter()
@@ -323,6 +324,23 @@ async function onRestore(note: NoteItem) {
 }
 
 onMounted(() => loadNotes('0'))
+
+/**
+ * keep-alive 复用组件时，从详情页返回不会触发 onMounted。
+ * 若详情页做过写操作（移入回收站 / 恢复），这里按版本号强制刷新，
+ * 避免「删除后返回列表那条笔记还在」以及「回收站看不到刚删的笔记」。
+ */
+const seenNoteVersion = ref(noteDataVersion())
+
+onActivated(() => {
+  const v = noteDataVersion()
+  if (v === seenNoteVersion.value) return
+  seenNoteVersion.value = v
+  // 当前目录、全部笔记、回收站都重新拉取（全部笔记需 force 绕过缓存）
+  loadNotes(breadcrumb.value[breadcrumb.value.length - 1]?.id ?? '0')
+  loadAllNotes(true)
+  loadRecycleNotes()
+})
 </script>
 
 <style scoped>

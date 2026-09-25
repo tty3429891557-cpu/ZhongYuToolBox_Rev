@@ -88,6 +88,9 @@ function mapStudent(sid: string | number): string {
 }
 
 async function load() {
+  // 守卫：keep-alive 下离开页面时 watcher 会带着 undefined 的 taskId 触发，
+  // Number(undefined)=NaN 会打出 ?id=NaN 的请求并被 ABP 拒绝（幽灵报错）
+  if (!Number.isFinite(taskId.value)) return
   loading.value = true
   analysisGroups.value = []
   try {
@@ -130,10 +133,14 @@ function sheetCommand(cmd: string) {
 }
 
 onMounted(load)
-// keep-alive 会复用同一组件实例，切换不同考试任务时需重新加载
+// keep-alive 会复用同一组件实例，切换不同考试任务时需重新加载；
+// 必须守卫当前路由名，否则离开页面后 watcher 仍会带着残缺参数打请求
 watch(
   () => [route.params.taskId, route.query.name],
-  () => load()
+  () => {
+    if (route.name !== 'exam-analysis') return
+    load()
+  }
 )
 </script>
 

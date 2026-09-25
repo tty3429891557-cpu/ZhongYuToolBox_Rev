@@ -3,7 +3,26 @@
  */
 import { defineStore } from 'pinia'
 import { loginApi, getUserInfo, refreshTokenApi, discoverSchool, buildApiBaseCandidates, type LoginResult } from '@/api/auth'
-import { PRESET_API_BASE, PRESET_WEB_BASE, DEFAULT_API_BASE, nativeWebBase } from '@/config'
+import {
+  PRESET_API_BASE,
+  PRESET_WEB_BASE,
+  DEFAULT_API_BASE,
+  nativeWebBase,
+  AUTO_SCHOOL_VALUE,
+  AUTO_TRY_ORDER,
+  SCHOOLS
+} from '@/config'
+
+/** 自动选择的尝试顺序：把上次命中的学校提到最前，减少 401 自动重登时的请求数 */
+function autoTryOrder(): string[] {
+  const resolved = localStorage.getItem('loginSchoolResolved')
+  if (!resolved || !AUTO_TRY_ORDER.includes(resolved)) return [...AUTO_TRY_ORDER]
+  return [resolved, ...AUTO_TRY_ORDER.filter((c) => c !== resolved)]
+}
+
+function schoolLabel(code: string): string {
+  return SCHOOLS.find((s) => s.value === code)?.label || code
+}
 import { saveObfuscatedPassword, loadObfuscatedPassword, clearObfuscatedPassword } from '@/utils/secretStore'
 
 /** 从 API 地址推导对应的学校原生 web 地址（承载 navPage.html） */
@@ -64,7 +83,20 @@ export const useAuthStore = defineStore('auth', {
   }),
   getters: {
     isLoggedIn: (s) => !!s.token && !isTokenExpired(s.token),
-    userName: (s) => s.realName || '未录入'
+    userName: (s) => s.realName || '未录入',
+    /**
+     * 当前用户 id：优先取登录时保存的 userId；
+     * 老会话（1.1.2 之前登录）此字段为空，从 JWT 的 sub / nameid / nameidentifier 兜底解析，
+     * 无需重新登录即可拿到（待办计数等接口需要它）。
+     */
+    effectiveUserId: (s): string => {
+      if (s.userId) return s.userId
+      const p = parseJwt(s.token || '')
+      if (!p) return ''
+      const v = p.sub || p.nameid ||
+        p['http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier'] || ''
+      return v ? String(v) : ''
+    }
   },
   actions: {
     setTokenInfo(result: { accessToken: string; refreshToken: string; expireInSeconds: number; refreshExpireInSeconds: number }) {
@@ -78,7 +110,8 @@ export const useAuthStore = defineStore('auth', {
     setUserInfo(info: Record<string, any>, apiBaseUrl: string) {
       this.realName = info.realName || ''
       this.photo = info.photo || 'https://s4.anilist.co/file/anilistcdn/user/avatar/large/default.png'
-      this.userId = info.userId || info.sub || info.nameid || ''
+      // GetInfoAsync 返回的用户 id 字段名是 `id`（实测 30174），此前漏取导致 userId 恒为空
+      this.userId = info.userId || info.id || info.sub || info.nameid || ''
       this.schoolCode = info.schoolCode || this.schoolCode
       this.apiBaseUrl = apiBaseUrl
       localStorage.setItem('realName', this.realName)
@@ -103,8 +136,39 @@ export const useAuthStore = defineStore('auth', {
     ) {
       let apiBaseUrl = this.apiBaseUrl || DEFAULT_API_BASE
       let preResult: LoginResult | null = null
+      // 「自动选择」命中后，后续（学校地址 / web 地址 / schoolCode 缓存）都要按命中的学校走
+      let effectiveSelect = schoolSelect
+      let preUserInfo: any = null
 
-      if (schoolSelect === 'other') {
+      if (schoolSelect === AUTO_SCHOOL_VALUE) {
+        // 自动选择：按顺序逐个学校尝试，首个「能登录 + 后端认可该账号」的即采用。
+        // 只用登录接口不够——跨校账号在别校后端上也会返回 200 但拿不到用户信息，
+        // 因此每个候选都要再调一次 GetInfoAsync 才算真正命中。
+        const order = autoTryOrder()
+        const errs: string[] = []
+        for (const code of order) {
+          const base = PRESET_API_BASE[code]
+          if (!base) continue
+          try {
+            const r = await loginApi(account, password, base)
+            const info = await getUserInfo(base, r.accessToken)
+            preResult = r
+            preUserInfo = info
+            apiBaseUrl = base
+            effectiveSelect = code
+            localStorage.setItem('loginSchoolResolved', code)
+            break
+          } catch (e) {
+            errs.push(`${schoolLabel(code)}：${(e as any)?.message || '账号或密码错误'}`)
+          }
+        }
+        if (!preResult) {
+          throw new Error(
+            `自动选择未找到可用学校（已尝试 ${order.length} 所）：${errs.join('；')}。` +
+              `可手动指定学校，或选「其它学校」输入本校代码。`
+          )
+        }
+      } else if (schoolSelect === 'other') {
         if (!schoolCode) throw new Error('请输入学校代码')
         const info = await discoverSchool(schoolCode)
         // 按候选顺序逐个尝试（作者代理域名 → discovery 的服务器），取第一个能登录成功的。
@@ -136,11 +200,11 @@ export const useAuthStore = defineStore('auth', {
       this.setTokenInfo(result)
       let userInfo: any
       try {
-        userInfo = await getUserInfo(apiBaseUrl, result.accessToken)
+        userInfo = preUserInfo ?? (await getUserInfo(apiBaseUrl, result.accessToken))
       } catch (e) {
         // 认证通过了但拿不到账号信息，通常是「学校」选错——各校后端彼此独立、账号不互通。
         const msg = (e as any)?.message || '未知错误'
-        if (schoolSelect !== 'other') {
+        if (effectiveSelect !== 'other') {
           throw new Error(
             `已通过账号认证，但所选学校后端不认可该账号（${msg}）。` +
               `请确认「学校」是否选对：不同学校后端独立、数据不互通，` +
@@ -158,16 +222,16 @@ export const useAuthStore = defineStore('auth', {
        * schoolCode 被存成了 'sxz'。而 resolveIframeBase 的兜底分支正是用
        * schoolCode 推导 web 地址，会导致专栏兜底地址指向错误学校。
        */
-      if (schoolSelect !== 'other') {
-        this.schoolCode = schoolSelect
-        localStorage.setItem('schoolCode', schoolSelect)
+      if (effectiveSelect !== 'other') {
+        this.schoolCode = effectiveSelect
+        localStorage.setItem('schoolCode', effectiveSelect)
       } else if (userInfo.schoolCode) {
         this.schoolCode = userInfo.schoolCode
         localStorage.setItem('schoolCode', userInfo.schoolCode)
       }
       // 同步「嵌套 iframe 基地址」为该校原生 web 地址（专栏 navPage.html 用），
       // 不再依赖作者服务器 zyapi.loshop.com.cn
-      localStorage.setItem('iframeBase', webBaseFor(apiBaseUrl, schoolSelect, schoolCode))
+      localStorage.setItem('iframeBase', webBaseFor(apiBaseUrl, effectiveSelect, schoolCode))
       // 记录凭据，供 401 后自动重新登录。
       // 账号/学校可以直接存（无敏感），密码只在用户勾选「记住密码」时以混淆形式保存。
       localStorage.setItem('loginAccount', account)
@@ -188,7 +252,8 @@ export const useAuthStore = defineStore('auth', {
     async autoRelogin() {
       const account = localStorage.getItem('loginAccount')
       const password = loadObfuscatedPassword()
-      const schoolSelect = localStorage.getItem('loginSchoolSelect') || 'sxz'
+      // 无历史选择时用「自动选择」（首选项）；命中过的学校会被自动匹配逻辑优先尝试
+      const schoolSelect = localStorage.getItem('loginSchoolSelect') || AUTO_SCHOOL_VALUE
       const schoolCode = localStorage.getItem('loginSchoolCode') || ''
       if (!account || !password) throw new Error('未保存登录密码，无法自动重新登录')
       await this.login(account, password, schoolSelect, schoolCode, true)

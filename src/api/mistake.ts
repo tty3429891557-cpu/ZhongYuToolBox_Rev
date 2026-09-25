@@ -90,7 +90,8 @@ export async function fetchQstHtml(qstPath: string): Promise<string> {
  */
 export async function fetchNoteScreenshot(noteUrl: string): Promise<string | null> {
   try {
-    const flResp = await fetch(proxyImgSrc(noteUrl))
+    // cache:'no-store'：避免被页面上 <img> 的 no-cors 缓存（无 ACAO 头）污染导致 CORS 拒绝
+    const flResp = await fetch(proxyImgSrc(noteUrl), { cache: 'no-store' })
     if (!flResp.ok) return null
     const fileList = await flResp.json()
     const pngEntry = (fileList || []).find(

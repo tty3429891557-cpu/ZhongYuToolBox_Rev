@@ -82,8 +82,14 @@ public class MainActivity extends Activity {
 
     private void startSite() {
         SiteService.start(this);
-        String url = "http://127.0.0.1:" + SiteService.PORT + "/";
-        status.setText("本地站点已启动（保活中）\n" + url + "\n\n点下方按钮在浏览器中打开。");
+        // 服务里解压 assets 是同步进行的，稍等一拍再取实际端口，避免使用首选端口显示成错误地址
+        status.postDelayed(new Runnable() {
+            @Override public void run() {
+                status.setText("本地站点已启动（保活中）\n" + SiteService.localUrl()
+                        + "\n\n点下方按钮在浏览器中打开。");
+            }
+        }, 400);
+        status.setText("正在启动本地站点…");
     }
 
     private void openBrowser() {

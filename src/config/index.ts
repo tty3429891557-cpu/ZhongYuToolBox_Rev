@@ -104,11 +104,17 @@ export interface SchoolOption {
 }
 
 export const SCHOOLS: SchoolOption[] = [
+  { value: 'auto', label: '自动选择' },
   { value: 'sxz', label: '省锡中' },
   { value: 'sxzsyxx', label: '省锡中双语学校' },
   { value: 'bjbsz', label: '北京市第八十中学' },
   { value: 'other', label: '其它学校' }
 ]
+
+/** 「自动选择」选项值：登录时按 AUTO_TRY_ORDER 依次尝试，首个能登录成功的即采用 */
+export const AUTO_SCHOOL_VALUE = 'auto'
+/** 自动选择时的尝试顺序（省锡中 → 省锡中双语学校 → 北京市第八十中学） */
+export const AUTO_TRY_ORDER = ['sxz', 'sxzsyxx', 'bjbsz']
 
 /** 学科常量（复刻 index.js 数组 a） */
 export const SUBJECTS: Array<[number, string]> = [

@@ -57,14 +57,14 @@ const loadingDetail = ref(true)
 const detail = ref<ColumnPageDetail | null>(null)
 
 /**
- * 渲染流程：字符串预处理（图片代理 → 视频卡片 → PDF 卡片）→ 净化 → v-html。
+ * 渲染流程：字符串预处理（图片代理 → 视频卡片 → 全部附件卡片）→ 净化 → v-html。
  * 顺序很关键：必须在所有字符串拼接**之后**再净化，
- * 否则 processPdfs 拼进去的文件名会成为绕过净化的注入通道。
+ * 否则 processAttachments 拼进去的文件名会成为绕过净化的注入通道。
  */
 const renderedContent = computed(() => {
   const raw = detail.value?.content
   if (!raw) return ''
-  return safeHtml(proxyContentImages(processPdfs(processVideos(raw))))
+  return safeHtml(proxyContentImages(processAttachments(processVideos(raw))))
 })
 
 /* 加载详情 + 调用已读 API */
@@ -119,29 +119,45 @@ function processVideos(html: string): string {
 }
 
 /**
- * 将文章 HTML 中的 PDF 附件块（pdf-wrapper / data-url=*.pdf）替换为统一附件卡片，
- * 与视频卡片外观一致。从原结构提取文件名作为卡片标题。
+ * 将文章 HTML 中的附件块替换为统一附件卡片。
+ *
+ * 覆盖两类结构：
+ *   a) `<div class="easy-editor-upload {pdf|ppt|word|excel|...}-wrapper" data-url=...>`
+ *      —— 富文本编辑器上传的**任意**附件（此前只处理 pdf，其余类型整块残留、
+ *         内联 onclick 被净化剥掉后彻底「看得见点不开」）。
+ *   b) 无 wrapper 但带 `data-url` 的附件容器。
+ *
+ * 卡片携带 data-file-url / data-file-kind，由 onBodyClick 事件委托统一跳转查看器。
+ * kind 依据 wrapper 类名与文件扩展名双重判定，保证「除 pdf 外的所有文件」也有查看入口。
  */
-function processPdfs(html: string): string {
+function processAttachments(html: string): string {
   if (!html) return html
-  // 匹配 <div ... pdf-wrapper ... data-url=...>...</div>
+  // 匹配 <div ... easy-editor-upload ... data-url=...>...</div>
   // data-url 可能带引号也可能不带（裸属性），需两种都兼容
   return html.replace(
-    /<div\b[^>]*?\bpdf-wrapper\b[^>]*?\bdata-url=(["']?)([^"'\s>]+)\1[^>]*>([\s\S]*?)<\/div>/gi,
-    (_m, _q: string, dataUrl: string, inner: string) => {
-      // 尽量提取原文件名（<a> 文本或 data-url 末段）
+    /<div\b[^>]*?\beasy-editor-upload\b[^>]*?\bdata-url=(["']?)([^"'\s>]+)\1[^>]*>([\s\S]*?)<\/div>/gi,
+    (match, _q: string, dataUrl: string, inner: string, offset: number, whole: string) => {
+      // div 的 class 片段（取整个匹配的起始标签部分）
+      const openTag = match.slice(0, match.indexOf('>') + 1)
+      // 文件名：优先 <a> 文本，其次 data-url 末段
       const nameMatch = inner.match(/<a[^>]*>([^<]+)<\/a>/i)
       let name = nameMatch ? nameMatch[1].trim() : ''
       if (!name) {
-        const decoded = decodeURIComponent(dataUrl.split('?')[0].split('/').pop() || '')
-        name = decoded || 'PDF 文件'
+        let decoded = ''
+        try {
+          decoded = decodeURIComponent(dataUrl.split('?')[0].split('/').pop() || '')
+        } catch {
+          decoded = dataUrl.split('?')[0].split('/').pop() || ''
+        }
+        name = decoded || '附件'
       }
-      // 修复：name / dataUrl 都来自被解析的 HTML，直接拼进属性会造成二次注入
-      // （例如 name = `"><img src=x onerror=alert(1)>` 就能闭合属性与标签）。
+      // 依据类名 + 扩展名判定 kind
+      const kind = detectFileKind(openTag, dataUrl, name)
+      // 修复：name / dataUrl 都来自被解析的 HTML，直接拼进属性会造成二次注入，
       // 必须转义；外层渲染时还会再做一次 DOMPurify 净化，双重保险。
       return (
-        `<div class="col-file-card" data-file-url="${escapeHtml(dataUrl)}" data-file-kind="pdf">` +
-        `<span class="col-file-icon pdf"></span>` +
+        `<div class="col-file-card" data-file-url="${escapeHtml(dataUrl)}" data-file-kind="${kind}">` +
+        `<span class="col-file-icon ${kind}"></span>` +
         `<span class="col-file-name">${escapeHtml(name)}</span>` +
         `<span class="col-file-action">查看</span></div>`
       )
@@ -149,8 +165,27 @@ function processPdfs(html: string): string {
   )
 }
 
-/** 跳转到优客畅学的附件查看器（复用其 mp4 / pdf 播放器） */
-function jumpViewer(kind: 'pdf' | 'video', url: string, name: string) {
+/** 依据起始标签的类名与文件扩展名判定附件类型 */
+function detectFileKind(openTag: string, url: string, name: string): string {
+  if (/\bpdf-wrapper\b/i.test(openTag)) return 'pdf'
+  if (/\bppt-wrapper\b|\bpptx-wrapper\b/i.test(openTag)) return 'pptx'
+  if (/\bword-wrapper\b|\bdoc-wrapper\b|\bdocx-wrapper\b/i.test(openTag)) return 'docx'
+  if (/\bexcel-wrapper\b|\bxls-wrapper\b|\bxlsx-wrapper\b/i.test(openTag)) return 'xlsx'
+  if (/\bvideo-wrapper\b/i.test(openTag)) return 'video'
+  if (/\baudio-wrapper\b/i.test(openTag)) return 'audio'
+  // 类名识别不了则按扩展名兜底
+  const src = (name || url || '').toLowerCase().split('?')[0].split('#')[0]
+  if (/\.pdf$/.test(src)) return 'pdf'
+  if (/\.(pptx?)$/.test(src)) return 'pptx'
+  if (/\.(docx?|rtf)$/.test(src)) return 'docx'
+  if (/\.(xlsx?|csv)$/.test(src)) return 'xlsx'
+  if (/\.(mp4|webm|ogg|mov|m3u8)$/.test(src)) return 'video'
+  if (/\.(mp3|wav|m4a|aac|flac)$/.test(src)) return 'audio'
+  return 'file'
+}
+
+/** 跳转到优客畅学的附件查看器（复用其 mp4 / pdf / office 播放器） */
+function jumpViewer(kind: string, url: string, name: string) {
   // 不手动 encodeURIComponent，交给 Vue Router 编码一次，避免双重编码。
   router.push({
     path: '/lesson/viewer',
@@ -160,7 +195,7 @@ function jumpViewer(kind: 'pdf' | 'video', url: string, name: string) {
 
 /**
  * 事件委托：拦截统一附件卡片 [data-file-url] 的点击，
- * 根据 data-file-kind（pdf/video）跳转到优客畅学对应的播放器。
+ * 根据 data-file-kind 跳转到优客畅学对应的查看器。
  */
 function onBodyClick(e: MouseEvent) {
   const target = e.target as HTMLElement | null
@@ -169,13 +204,12 @@ function onBodyClick(e: MouseEvent) {
   const card = target.closest('[data-file-url]') as HTMLElement | null
   if (card) {
     const fileUrl = card.getAttribute('data-file-url') || ''
-    const kind = card.getAttribute('data-file-kind') === 'video' ? 'video' : 'pdf'
+    const kind = card.getAttribute('data-file-kind') || 'pdf'
     if (fileUrl) {
       e.preventDefault()
       e.stopImmediatePropagation()
       e.stopPropagation()
-      const fallbackName = kind === 'video' ? '视频' : 'PDF'
-      jumpViewer(kind, fileUrl, detail.value?.title || fallbackName)
+      jumpViewer(kind, fileUrl, detail.value?.title || '附件')
     }
     return
   }
@@ -184,12 +218,12 @@ function onBodyClick(e: MouseEvent) {
   const anchor = target.closest('a[href]') as HTMLAnchorElement | null
   if (anchor) {
     const href = anchor.getAttribute('href') || ''
-    if (/\.(pdf|mp4|webm|ogg|mov)(\?|#|$)/i.test(href)) {
+    if (/\.(pdf|pptx?|docx?|xlsx?|mp4|webm|ogg|mov)(\?|#|$)/i.test(href)) {
       e.preventDefault()
       e.stopImmediatePropagation()
       e.stopPropagation()
-      const isVideo = /\.(mp4|webm|ogg|mov)/i.test(href)
-      jumpViewer(isVideo ? 'video' : 'pdf', href, detail.value?.title || (isVideo ? '视频' : 'PDF'))
+      const isVideo = /\.(mp4|webm|ogg|mov)(\?|#|$)/i.test(href)
+      jumpViewer(isVideo ? 'video' : detectFileKind('', href, href), href, detail.value?.title || '附件')
     }
   }
 }
@@ -308,12 +342,31 @@ onMounted(loadDetail)
 .detail-body :deep(.col-file-icon.pdf) {
   background: #f56c6c;
 }
+.detail-body :deep(.col-file-icon.pptx) {
+  background: #e6a23c;
+}
+.detail-body :deep(.col-file-icon.docx) {
+  background: #2b8cf0;
+}
+.detail-body :deep(.col-file-icon.xlsx) {
+  background: #21a366;
+}
+.detail-body :deep(.col-file-icon.audio) {
+  background: #9b59b6;
+}
+.detail-body :deep(.col-file-icon.file) {
+  background: #909399;
+}
 .detail-body :deep(.col-file-icon.video) {
   background: #409eff;
 }
-/* 图标内的白色符号（pdf: 文档角标 / video: 播放三角） */
-.detail-body :deep(.col-file-icon.pdf)::after {
-  content: 'PDF';
+/* 图标内的白色文字角标（pdf / pptx / docx / xlsx / file） */
+.detail-body :deep(.col-file-icon.pdf)::after,
+.detail-body :deep(.col-file-icon.pptx)::after,
+.detail-body :deep(.col-file-icon.docx)::after,
+.detail-body :deep(.col-file-icon.xlsx)::after,
+.detail-body :deep(.col-file-icon.audio)::after,
+.detail-body :deep(.col-file-icon.file)::after {
   position: absolute;
   inset: 0;
   display: flex;
@@ -322,6 +375,26 @@ onMounted(loadDetail)
   font-size: 10px;
   font-weight: 700;
   color: #fff;
+}
+.detail-body :deep(.col-file-icon.pdf)::after {
+  content: 'PDF';
+}
+.detail-body :deep(.col-file-icon.pptx)::after {
+  content: 'PPT';
+}
+.detail-body :deep(.col-file-icon.docx)::after {
+  content: 'DOC';
+}
+.detail-body :deep(.col-file-icon.xlsx)::after {
+  content: 'XLS';
+}
+.detail-body :deep(.col-file-icon.audio)::after {
+  content: '♪';
+  font-size: 16px;
+}
+.detail-body :deep(.col-file-icon.file)::after {
+  content: 'FILE';
+  font-size: 8px;
 }
 .detail-body :deep(.col-file-icon.video)::after {
   content: '';

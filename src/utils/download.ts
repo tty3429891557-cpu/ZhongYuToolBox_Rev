@@ -35,7 +35,10 @@ export function downloadBlob(blob: Blob, filename: string): void {
 
 /** 下载一个 URL 对应的内容（先取成 blob，避免跨域时 download 属性被忽略） */
 export async function downloadUrl(url: string, filename: string): Promise<void> {
-  const resp = await fetch(url)
+  // cache:'no-store'：学校 OSS（ezy-sxz）不带 Vary: Origin，页面里 <img> 的
+  // no-cors 响应（无 ACAO 头）会污染缓存，后续 fetch(cors) 命中同一缓存会被
+  // CORS 检查拒绝 →「Failed to fetch」。下载必须绕过缓存直连网络。
+  const resp = await fetch(url, { cache: 'no-store' })
   if (!resp.ok) throw new Error(`下载失败：HTTP ${resp.status}`)
   const blob = await resp.blob()
   if (!blob.size) throw new Error('下载内容为空')

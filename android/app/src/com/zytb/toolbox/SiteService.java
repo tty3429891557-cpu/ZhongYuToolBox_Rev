@@ -15,10 +15,10 @@ import android.os.IBinder;
  */
 public class SiteService extends Service {
 
-    /** 端口固定为 8322（只监听 127.0.0.1，不对外网开放） */
+    /** 首选端口 8322（只监听 127.0.0.1，不对外网开放）；被占用时向后顺延 */
     public static final int PORT = 8322;
 
-    private static LocalWebServer server;
+    private static volatile LocalWebServer server;
 
     @Override
     public IBinder onBind(Intent intent) { return null; }
@@ -27,8 +27,14 @@ public class SiteService extends Service {
     public int onStartCommand(Intent intent, int flags, int startId) {
         startForegroundInternal();
         if (server == null) {
-            server = new LocalWebServer(this, PORT);
-            server.start();
+            LocalWebServer s = new LocalWebServer(this, PORT);
+            // 修复：原实现忽略 start() 结果，端口被占用时站点起不来却毫无提示
+            if (!s.start()) {
+                android.util.Log.e("ZytbSite", "本地站点启动失败：8322~" + (PORT + LocalWebServer.PORT_RANGE - 1) + " 均被占用");
+                return START_STICKY;
+            }
+            server = s;
+            android.util.Log.i("ZytbSite", "本地站点已启动：" + localUrl());
         }
         return START_STICKY;
     }
@@ -39,7 +45,12 @@ public class SiteService extends Service {
         super.onDestroy();
     }
 
-    public static String localUrl() { return "http://127.0.0.1:" + PORT + "/"; }
+    /** 实际生效的地址（端口可能与首选不同） */
+    public static String localUrl() {
+        LocalWebServer s = server;
+        int p = s != null ? s.getBoundPort() : 0;
+        return "http://127.0.0.1:" + (p > 0 ? p : PORT) + "/";
+    }
 
     public static void start(Context ctx) {
         Intent i = new Intent(ctx, SiteService.class);

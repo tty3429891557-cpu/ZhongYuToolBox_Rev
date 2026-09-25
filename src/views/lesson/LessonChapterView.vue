@@ -75,10 +75,19 @@ const handlers: AttachmentHandlers = {
   onViewObject: (url, name) => openViewer('video', url, name),
   onViewPpt: (url, name) => openViewer('pptx', url, name),
   onViewPdf: (url, name) => openViewer('pdf', url, name),
+  // doc/docx/xls/xlsx 等：按扩展名分派到 docx / xlsx 查看器
+  onViewOffice: (url, name) => openViewer(officeKindFromName(url, name), url, name),
   onDownload: (url, _name) => window.open(url, '_blank')
 }
 
-function openViewer(kind: 'video' | 'pptx' | 'pdf', url: string, name: string) {
+/** 从文件名/URL 推断 Office 查看器类型（默认 docx，可覆盖绝大多数 Word 文档） */
+function officeKindFromName(url: string, name: string): 'docx' | 'xlsx' {
+  const src = (name || url || '').toLowerCase().split('?')[0].split('#')[0]
+  if (/\.(xlsx?|csv)$/.test(src)) return 'xlsx'
+  return 'docx'
+}
+
+function openViewer(kind: 'video' | 'pptx' | 'pdf' | 'docx' | 'xlsx', url: string, name: string) {
   router.push({
     path: '/lesson/viewer',
     query: { kind, url, name }
